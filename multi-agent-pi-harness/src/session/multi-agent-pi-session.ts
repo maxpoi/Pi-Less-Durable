@@ -8,6 +8,7 @@ import {
   type AgentLoop,
   type AgentLoopLogger,
   type TargetedLoopExtensionRegistry,
+  type ThinkingLevel,
 } from "multi-agent-pi";
 import { createAgentLoop as createOwnedAgentLoop } from "../agent-loop/create-agent-loop.js";
 import type { SessionInfra } from "./session-infra.js";
@@ -21,6 +22,8 @@ export interface CreateAgentLoopOptions {
   readonly id?: string;
   readonly loopTag?: string;
   readonly model?: Model<Api>;
+  readonly thinkingLevel?: ThinkingLevel;
+  readonly tools?: readonly string[];
   readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
 }
 
@@ -66,8 +69,12 @@ export function createMultiAgentPiSession(options: CreateMultiAgentPiSessionOpti
         },
         extensionRegistry,
       ),
-      onAfterLoopCreate: (loop, loopOptions) =>
-        loopOptions.model === undefined ? loop.setModel(getDefaultModel()) : undefined,
+      onAfterLoopCreate: async (loop, loopOptions) => {
+        if (loopOptions.model === undefined) await loop.setModel(getDefaultModel());
+        if (loopOptions.thinkingLevel !== undefined) {
+          loop.session.setThinkingLevel(loopOptions.thinkingLevel, { persist: false });
+        }
+      },
     },
     extensionRegistry,
     onClose: closedSession => options.onClosed(closedSession),

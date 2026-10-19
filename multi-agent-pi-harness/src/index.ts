@@ -78,6 +78,19 @@ export {
   type ThinkingLevel,
 } from "multi-agent-pi";
 export {
+  CODE_REVIEW_IDENTITY_PROMPT,
+  CODE_REVIEW_LOOP_TAG,
+  CODE_REVIEW_METHODOLOGY_PROMPT,
+  CODE_REVIEW_STANDARDS_PROMPT,
+  CODE_REVIEW_TOOL_ALLOWLIST,
+  CODE_REVIEW_TOOLS_PROMPT,
+  buildCodeReviewTaskPrompt,
+  configureCodeReviewAgentLoop,
+  createCodeReview,
+  type CodeReviewTaskPromptOptions,
+  type CreateCodeReviewOptions,
+} from "./agent-loop/code-review-agent.js";
+export {
   MultiAgentPiHarnessConfigError,
   type MultiAgentPiHarnessConfigErrorCode,
 } from "./config/config-path.js";
