@@ -1,11 +1,3 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentLoop } from "multi-agent-pi";
-import type { MultiAgentPiSession } from "../session/multi-agent-pi-session.js";
-
-export const CODE_REVIEW_LOOP_TAG = "code_review";
-export const CODE_REVIEW_TOOL_ALLOWLIST = ["bash", "read"] as const;
-
 export const CODE_REVIEW_IDENTITY_PROMPT = `You are a First Principle Thinking review agent. Your sole purpose is to verify coding work by reasoning from fundamental truths -- not from assumptions, conventions, surface-level pattern matching, or memory of what was intended.
 
 You have a compacted summary (or full context) of the coding session. You have full access to the filesystem. Use your tools. Re-read files. Verify every claim against ground truth.
@@ -109,57 +101,17 @@ export const CODE_REVIEW_STANDARDS_PROMPT = `## Coding Guidelines
 - [ ] check for Principle of Least Surprise / Conceptual Integrity: Before introducing a new mechanism (callback, listener, notification path), verify whether an existing mechanism already handles the same category of concern. If it does, extend it. The reviewer should ask: "Where are the siblings of this change handled? Does this follow the same path?"
 - [ ] check based on other software engineering principles as well.`;
 
-export const CODE_REVIEW_TOOLS_PROMPT = `Use only the tools exposed to this review loop:
-- \`read\`: read source files directly before making claims
-- \`bash\`: inspect diffs, repository state, and source references; do not run builds or modify files`;
-
-export function configureCodeReviewAgentLoop(pi: ExtensionAPI): void {
-  pi.on("before_agent_start", event => {
-    event.systemPromptOptions.customPrompt = `<identity>\n${CODE_REVIEW_IDENTITY_PROMPT}\n</identity>`;
-    event.systemPromptOptions.sections.review_methodology = CODE_REVIEW_METHODOLOGY_PROMPT;
-    event.systemPromptOptions.sections.review_standards = CODE_REVIEW_STANDARDS_PROMPT;
-    event.systemPromptOptions.sections.tools = CODE_REVIEW_TOOLS_PROMPT;
-  });
-}
-
-export interface CreateCodeReviewOptions {
-  readonly session: MultiAgentPiSession;
-  readonly id?: string;
-  readonly model?: Model<Api>;
-  readonly configurePrompt?: (pi: ExtensionAPI) => Promise<void> | void;
-}
-
-/** Create an unprompted review loop. The caller owns prompting and destruction. */
-export function createCodeReview(options: CreateCodeReviewOptions): Promise<AgentLoop> {
-  return options.session.create({
-    ...(options.id === undefined ? {} : { id: options.id }),
-    loopTag: CODE_REVIEW_LOOP_TAG,
-    ...(options.model === undefined ? {} : { model: options.model }),
-    thinkingLevel: "high",
-    tools: [...CODE_REVIEW_TOOL_ALLOWLIST],
-    configurePrompt: async pi => {
-      configureCodeReviewAgentLoop(pi);
-      await options.configurePrompt?.(pi);
-    },
-  });
-}
-
-export interface CodeReviewTaskPromptOptions {
+export function buildCodeReviewTaskPrompt(options: {
   readonly summary: string;
   readonly context?: string;
-}
-
-export function buildCodeReviewTaskPrompt(options: CodeReviewTaskPromptOptions): string {
-  const summary = options.summary.trim();
-  if (!summary) throw new Error("Code review summary must not be empty");
-  const context = options.context?.trim();
-  const contextBlock = context
-    ? `## Session Context (Compacted)\n\n${context}\n\n---\n\n`
+}): string {
+  const contextBlock = options.context
+    ? `## Session Context (Compacted)\n\n${options.context}\n\n---\n\n`
     : "";
   return contextBlock
     + "## Review Task\n\n"
     + "Review the coding work described below using First Principle Thinking.\n\n"
-    + `**What was implemented:** ${summary}\n\n`
+    + `**What was implemented:** ${options.summary}\n\n`
     + "Apply all phases of the methodology. Use your tools to verify claims against "
     + "ground truth -- re-read the actual files that were changed, check for existing "
     + "patterns, challenge assumptions. Do NOT run any build commands. Do NOT modify files.\n\n"

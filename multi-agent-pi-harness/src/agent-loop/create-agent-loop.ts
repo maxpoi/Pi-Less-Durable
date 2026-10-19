@@ -12,7 +12,6 @@ import {
   createPiExtensionLoader,
   type AgentLoopLogger,
   type TargetedLoopExtensionRegistry,
-  type ThinkingLevel,
 } from "multi-agent-pi";
 import type { SessionInfra } from "../session/session-infra.js";
 
@@ -21,8 +20,6 @@ export interface CreateAgentLoopOptions {
   readonly loopDir: string;
   readonly loopTag?: string;
   readonly model?: Model<Api>;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly tools?: readonly string[];
   /** Install the host's complete prompt policy through Pi's native extension API. */
   readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
   readonly logger: AgentLoopLogger;
@@ -38,16 +35,16 @@ export async function createAgentLoop(
     throw new Error("MultiAgentPiHarness requires the host to configure each AgentLoop prompt policy");
   }
   const model = options.model ?? infra.models.getModel();
-  const thinkingLevel = options.thinkingLevel ?? infra.models.getThinkingLevel();
+  const thinkingLevel = infra.models.getThinkingLevel();
   const settings = infra.models.settings;
   // MultiAgentPiSettingsManager is the sole Pi-facing settings adapter. Pi exposes its
   // concrete class here, so bridge the structural adapter without creating a
   // second settings authority.
   const piSettings = settings as unknown as SettingsManager;
-  const promptExtensionName = "multi-agent-pi-harness-host-prompt";
-  const promptExtensionPath = `<inline:${promptExtensionName}>`;
-  const promptExtension = {
-    name: promptExtensionName,
+  const hostPromptExtensionName = "multi-agent-pi-harness-host-prompt";
+  const hostPromptExtensionPath = `<inline:${hostPromptExtensionName}>`;
+  const hostPromptExtension = {
+    name: hostPromptExtensionName,
     hidden: true,
     factory: options.configurePrompt,
   };
@@ -73,11 +70,11 @@ export async function createAgentLoop(
     agentDir: infra.paths.configDir,
     settingsManager: settings,
     selectedExtensionFiles: [],
-    extensionFactories: [promptExtension, compactionExtension, targetedExtension],
+    extensionFactories: [hostPromptExtension, compactionExtension, targetedExtension],
   });
   await resourceLoader.reload();
   const extensionError = resourceLoader.getExtensions().errors.find(
-    error => error.path === promptExtensionPath
+    error => error.path === hostPromptExtensionPath
       || error.path === compactionExtensionPath
       || error.path === targetedExtensionPath,
   );
@@ -95,9 +92,7 @@ export async function createAgentLoop(
     modelRuntime: infra.models.runtime,
     model,
     thinkingLevel,
-    ...(options.tools === undefined
-      ? { noTools: "all" as const }
-      : { tools: [...options.tools] }),
+    noTools: "all",
     resourceLoader,
     sessionManager,
     settingsManager: piSettings,
