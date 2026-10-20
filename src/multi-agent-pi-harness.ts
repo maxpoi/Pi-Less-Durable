@@ -6,7 +6,6 @@ import {
   defaultAgentLoopLogger,
   type AgentLoopLogger,
   type ExecutionEnvFactory,
-  type ExtensionAPI,
   type ExtensionFactory,
   type ExtensionLoopContext,
   type ModelRuntime,
@@ -39,8 +38,6 @@ export interface CreateMultiAgentPiSessionOptions {
   /** Execution working directory passed to Pi. Defaults to the host process cwd. */
   readonly cwd?: string;
   readonly sessionDir?: string;
-  /** Install the host's complete prompt policy through Pi's native extension API. */
-  readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
 }
 
 export interface ReloadMultiAgentPiHarnessOptions {
@@ -56,22 +53,6 @@ export type MultiAgentPiHarnessExtensionTarget =
     }
   | ((context: ExtensionLoopContext) => boolean);
 
-function throwSessionCreationFailure(
-  sessionId: SessionId,
-  creationError: unknown,
-  cleanupError: unknown,
-): never {
-  const cleanupErrors = cleanupError instanceof AggregateError
-    ? cleanupError.errors
-    : [cleanupError];
-  const distinctErrors = [...new Set<unknown>([creationError, ...cleanupErrors])];
-  if (distinctErrors.length === 1) throw distinctErrors[0];
-  throw new AggregateError(
-    distinctErrors,
-    `Failed to create and clean up MultiAgentPiSession "${sessionId}"`,
-  );
-}
-
 export class MultiAgentPiHarness {
   readonly #configStore: MultiAgentPiConfigStore;
   readonly #modelRuntime: ModelRuntime;
@@ -81,7 +62,6 @@ export class MultiAgentPiHarness {
   #configDiagnostics: readonly MultiAgentPiHarnessConfigError[] = [];
   #settingsManager: MultiAgentPiSettingsManager | undefined;
   readonly #sessions = new Map<SessionId, MultiAgentPiSession>();
-  readonly #pendingSessions = new Map<SessionId, MultiAgentPiSession>();
   #state: MultiAgentPiHarnessState = "created";
   #openPromise: Promise<void> | undefined;
   #closePromise: Promise<void> | undefined;
@@ -146,9 +126,6 @@ export class MultiAgentPiHarness {
 
     let sessions: MultiAgentPiSession[];
     try {
-      if (this.#pendingSessions.size > 0) {
-        throw new Error("Cannot reload MultiAgentPiHarness while MultiAgentPiSession creation is pending");
-      }
       sessions = options.sessionId === undefined
         ? [...this.#sessions.values()]
         : [this.#requireSession(options.sessionId)];
@@ -188,7 +165,7 @@ export class MultiAgentPiHarness {
     return this.#settleReload(settingsReload, sessionReloads);
   }
 
-  /** Declare a Pi extension for every Session's primary loop; existing loops adopt it on reload. */
+  /** Declare a Pi extension for every Session's canonical `main` loop; existing loops adopt it on reload. */
   registerExtension(extension: ExtensionFactory): void {
     this.#assertExtensionRegistrationAllowed();
     this.#extensionRegistry.register(
@@ -204,16 +181,14 @@ export class MultiAgentPiHarness {
     this.#extensionRegistry.register(undefined, target, extension);
   }
 
+  /** Create an empty Session; the host explicitly creates, designates, and selects its canonical `main` loop. */
   async createSession(options: CreateMultiAgentPiSessionOptions): Promise<MultiAgentPiSession> {
     if (this.#state !== "open") {
       throw new Error(`Cannot create a MultiAgentPiSession while the harness is ${this.#state}`);
     }
-    if (typeof options?.configurePrompt !== "function") {
-      throw new Error("MultiAgentPiHarness requires the host to configure its prompt policy");
-    }
 
     let id = createSessionId();
-    while (this.#sessions.has(id) || this.#pendingSessions.has(id)) {
+    while (this.#sessions.has(id)) {
       id = createSessionId();
     }
 
@@ -242,31 +217,10 @@ export class MultiAgentPiHarness {
         if (this.#sessions.get(closedSession.id) === closedSession) {
           this.#sessions.delete(closedSession.id);
         }
-        if (this.#pendingSessions.get(closedSession.id) === closedSession) {
-          this.#pendingSessions.delete(closedSession.id);
-        }
       },
     });
-    this.#pendingSessions.set(id, session);
-    try {
-      const main = await session.create({
-        id: PRIMARY_AGENT_LOOP_ID,
-        loopTag: PRIMARY_AGENT_LOOP_ID,
-        configurePrompt: options.configurePrompt,
-      });
-      session.setPrimary(main.id);
-      session.select(main.id);
-      this.#pendingSessions.delete(id);
-      this.#sessions.set(id, session);
-      return session;
-    } catch (error) {
-      try {
-        await session.close();
-      } catch (cleanupError) {
-        throwSessionCreationFailure(id, error, cleanupError);
-      }
-      throw error;
-    }
+    this.#sessions.set(id, session);
+    return session;
   }
 
   #assertExtensionRegistrationAllowed(): void {
@@ -347,13 +301,9 @@ export class MultiAgentPiHarness {
     }
 
     this.#state = "closing";
-    // Session.close() synchronously transitions to closed and unregisters both
-    // published and still-initializing sessions before returning settlement.
-    const ownedSessions = new Set([
-      ...this.#sessions.values(),
-      ...this.#pendingSessions.values(),
-    ]);
-    const sessionClosures = [...ownedSessions].map(session => session.close());
+    // Session.close() synchronously transitions to closed and unregisters each
+    // published session before returning settlement.
+    const sessionClosures = [...this.#sessions.values()].map(session => session.close());
     this.#closePromise = this.#closeRuntime(sessionClosures);
     return this.#closePromise;
   }
@@ -372,7 +322,6 @@ export class MultiAgentPiHarness {
     }
 
     this.#sessions.clear();
-    this.#pendingSessions.clear();
     this.#settingsManager = undefined;
     this.#state = "closed";
 
