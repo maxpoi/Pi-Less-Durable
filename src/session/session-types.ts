@@ -1,4 +1,4 @@
-import type { SessionState } from "multi-agent-pi";
+import type { SessionState } from "#core";
 
 declare const sessionIdBrand: unique symbol;
 

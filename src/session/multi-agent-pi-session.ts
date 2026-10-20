@@ -1,5 +1,3 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -7,8 +5,11 @@ import {
   assertAgentLoopId,
   type AgentLoop,
   type AgentLoopLogger,
+  type Api,
+  type ExtensionAPI,
+  type Model,
   type TargetedLoopExtensionRegistry,
-} from "multi-agent-pi";
+} from "#core";
 import { createAgentLoop as createOwnedAgentLoop } from "../agent-loop/create-agent-loop.js";
 import type { SessionInfra } from "./session-infra.js";
 import type { SessionId } from "./session-types.js";

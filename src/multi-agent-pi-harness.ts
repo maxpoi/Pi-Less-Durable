@@ -1,8 +1,3 @@
-import type {
-  ExtensionAPI,
-  ExtensionFactory,
-  ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
 import { join, resolve } from "node:path";
 import {
   MultiAgentPiCompactionPolicy,
@@ -11,9 +6,12 @@ import {
   defaultAgentLoopLogger,
   type AgentLoopLogger,
   type ExecutionEnvFactory,
+  type ExtensionAPI,
+  type ExtensionFactory,
   type ExtensionLoopContext,
+  type ModelRuntime,
   type MultiAgentPiConfig,
-} from "multi-agent-pi";
+} from "#core";
 import { resolveMultiAgentPiHarnessConfigDirectory, type MultiAgentPiHarnessConfigError } from "./config/config-path.js";
 import { MultiAgentPiConfigStore } from "./config/config-store.js";
 import { createSessionInfra } from "./session/session-infra.js";

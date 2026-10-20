@@ -1,12 +1,13 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
+  type Api,
   type ExecutionEnvFactory,
+  type Model,
+  type ModelRuntime,
   type MultiAgentPiSettingsManager,
   type SessionInfra as SharedSessionInfra,
   type SessionPaths,
   type ThinkingLevel,
-} from "multi-agent-pi";
+} from "#core";
 import type { SessionId } from "./session-types.js";
 
 export interface SessionModelState {
