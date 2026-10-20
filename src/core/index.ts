@@ -1,3 +1,14 @@
+/** Runtime bridge to the single Pi installation bundled with this package. */
+export {
+  ModelRuntime,
+  SessionManager,
+  createAgentSession,
+  type ExtensionAPI,
+  type ExtensionFactory,
+  type SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+export type { Api, Model } from "@earendil-works/pi-ai";
+
 export {
   AgentLoop,
   assertAgentLoopId,

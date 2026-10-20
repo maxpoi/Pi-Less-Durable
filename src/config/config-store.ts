@@ -7,7 +7,7 @@ import {
   readJsonFile,
   type MultiAgentPiConfig,
   type MultiAgentPiConfigStorage,
-} from "multi-agent-pi";
+} from "#core";
 import { MultiAgentPiHarnessConfigError } from "./config-path.js";
 
 export interface LoadedMultiAgentPiHarnessConfig {

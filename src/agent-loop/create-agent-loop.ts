@@ -1,18 +1,17 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
-import {
-  SessionManager,
-  createAgentSession,
-  type ExtensionAPI,
-  type SettingsManager,
-} from "@earendil-works/pi-coding-agent";
 import {
   AgentLoop,
+  SessionManager,
   bindExecutionEnv,
+  createAgentSession,
   createCompactionStripExtension,
   createPiExtensionLoader,
   type AgentLoopLogger,
+  type Api,
+  type ExtensionAPI,
+  type Model,
+  type SettingsManager,
   type TargetedLoopExtensionRegistry,
-} from "multi-agent-pi";
+} from "#core";
 import type { SessionInfra } from "../session/session-infra.js";
 
 export interface CreateAgentLoopOptions {

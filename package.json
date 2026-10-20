@@ -1,8 +1,8 @@
 {
-  "name": "multi-agent-pi-harness",
-  "version": "0.0.0",
+  "name": "pi-less-durable",
+  "version": "0.0.1",
   "private": true,
-  "description": "Transport-neutral multi-agent runtime",
+  "description": "MultiAgentPi core and transport-neutral harness",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,6 +10,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    }
+  },
+  "imports": {
+    "#core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
     }
   },
   "files": [
@@ -21,17 +27,22 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify": "npm run typecheck && npm run build",
-    "test": "npm run build && node --test",
-    "check": "npm run typecheck && npm test",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "engines": {
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-codemode": "1.1.0",
     "@earendil-works/pi-coding-agent": "1.1.0",
-    "multi-agent-pi": "file:../multi-agent-pi"
+    "@earendil-works/pi-durable": "1.1.0",
+    "@earendil-works/pi-mcp": "1.1.0",
+    "@earendil-works/pi-telemetry": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0"
   },
   "devDependencies": {
     "@types/node": "24.3.0",
