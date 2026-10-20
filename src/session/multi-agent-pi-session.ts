@@ -25,7 +25,16 @@ export interface CreateAgentLoopOptions {
   readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
 }
 
-export type MultiAgentPiSession = Session<AgentLoop, CreateAgentLoopOptions, SessionId>;
+export class MultiAgentPiSession extends Session<AgentLoop, CreateAgentLoopOptions, SessionId> {
+  override setPrimary(id: string): AgentLoop {
+    if (id !== PRIMARY_AGENT_LOOP_ID) {
+      throw new Error(
+        `MultiAgentPiSession primary AgentLoop must use id "${PRIMARY_AGENT_LOOP_ID}", got "${id}"`,
+      );
+    }
+    return super.setPrimary(id);
+  }
+}
 
 type SessionClosedHandler = (session: MultiAgentPiSession) => void;
 
@@ -46,7 +55,7 @@ export function createMultiAgentPiSession(options: CreateMultiAgentPiSessionOpti
   let session!: MultiAgentPiSession;
   const getDefaultModel = (): Model<Api> =>
     (session.primary?.session.model as Model<Api> | undefined) ?? infra.models.getModel();
-  session = new Session({
+  session = new MultiAgentPiSession({
     id: infra.id,
     loopManager: {
       getId: loopOptions => {
