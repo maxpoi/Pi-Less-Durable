@@ -13,7 +13,7 @@ export interface LoopReloadError {
   readonly message: string;
 }
 
-export type LoopDestroyReason = "creation_failed" | "destroy" | "shutdown";
+export type LoopDestroyReason = "destroy" | "shutdown";
 
 export interface LoopManagerEventMap<TLoop extends OwnedLoop> {
   /** Synchronous hook emitted immediately before Core commits a selection change. */
@@ -25,7 +25,6 @@ export interface LoopManagerEventMap<TLoop extends OwnedLoop> {
   readonly before_loop_destroy: {
     readonly loop: TLoop;
     readonly loopId: string;
-    readonly requestedLoopId?: string;
     readonly sessionId?: string;
     readonly reason: LoopDestroyReason;
   };
@@ -52,7 +51,6 @@ interface LoopManagerEventSubscription<TLoop extends OwnedLoop> {
 }
 
 type LoopManagerCallbackPhase =
-  | "after_loop_create"
   | "before_selection_change"
   | "before_loop_destroy"
   | "after_loop_destroy";
@@ -72,20 +70,14 @@ export function assertLoopManagerMutationAllowed(manager: object, action: string
   }
 }
 
-export interface LoopManagerOptions<TLoop extends OwnedLoop, TConfig> {
-  /** Construct a loop with the one ID resolved by getId() for this creation. */
-  readonly createLoop: (config: TConfig, id: string) => Promise<TLoop>;
-  readonly getId: (config: TConfig) => string;
+export interface LoopManagerOptions<TLoop extends OwnedLoop> {
   /** Optional owner identity included in lifecycle events. */
   readonly sessionId?: string;
-  /** Complete host setup before publication; rejection triggers Core-owned loop teardown. */
-  readonly onAfterLoopCreate?: (loop: TLoop, config: TConfig) => Promise<void> | void;
   readonly onAfterLoopDestroy?: (loop: TLoop) => Promise<void> | void;
 }
 
 interface LoopLifecycleRecord<TLoop extends OwnedLoop> {
   readonly id: string;
-  creation?: Promise<TLoop>;
   loop?: TLoop;
   destruction?: Promise<void>;
   destroying?: boolean;
@@ -93,7 +85,6 @@ interface LoopLifecycleRecord<TLoop extends OwnedLoop> {
 
 interface LoopTeardownOptions {
   readonly reason: LoopDestroyReason;
-  readonly requestedLoopId?: string;
   readonly afterDestroy?: () => void;
 }
 
@@ -104,56 +95,29 @@ interface LoopTeardownOptions {
  * collection publication, all-or-targeted sequential reload traversal, selection state,
  * synchronous switch-away before teardown, and shutdown.
  */
-export class LoopManager<TLoop extends OwnedLoop, TConfig> {
+export class LoopManager<TLoop extends OwnedLoop> {
   readonly #records = new Map<string, LoopLifecycleRecord<TLoop>>();
-  readonly #createLoop: (config: TConfig, id: string) => Promise<TLoop>;
-  readonly #getId: (config: TConfig) => string;
   readonly #sessionId: string | undefined;
   readonly #eventHandlers = new Map<
     LoopManagerEventType<TLoop>,
     Set<LoopManagerEventSubscription<TLoop>>
   >();
-  readonly #onAfterLoopCreate: NonNullable<LoopManagerOptions<TLoop, TConfig>["onAfterLoopCreate"]>;
-  readonly #onAfterLoopDestroy: NonNullable<LoopManagerOptions<TLoop, TConfig>["onAfterLoopDestroy"]>;
+  readonly #onAfterLoopDestroy: NonNullable<LoopManagerOptions<TLoop>["onAfterLoopDestroy"]>;
   #primaryId: string | undefined;
   #selectedId: string | undefined;
-  #acceptingCreations = true;
+  #acceptingRegistrations = true;
   #acceptingDestructions = true;
   #shutdownPromise: Promise<void> | undefined;
 
-  constructor(options: LoopManagerOptions<TLoop, TConfig>) {
-    this.#createLoop = options.createLoop;
-    this.#getId = options.getId;
+  constructor(options: LoopManagerOptions<TLoop> = {}) {
     this.#sessionId = options.sessionId;
-    this.#onAfterLoopCreate = options.onAfterLoopCreate ?? (() => {});
     this.#onAfterLoopDestroy = options.onAfterLoopDestroy ?? (() => {});
   }
 
-  /** Create and publish a loop after its runtime is ready. */
-  async create(config: TConfig): Promise<TLoop> {
-    const id = this.#getId(config);
-    this.assertCreationAdmission(id);
-
-    const record: LoopLifecycleRecord<TLoop> = { id };
-    this.#records.set(id, record);
-    const creation = this.createAndPublish(config, record);
-    record.creation = creation;
-    try {
-      return await creation;
-    } catch (error) {
-      if (record.destruction === undefined && this.#records.get(id) === record) {
-        this.#records.delete(id);
-      }
-      throw error;
-    } finally {
-      delete record.creation;
-    }
-  }
-
-  /** Whether an admitted loop creation or destruction has not settled yet. */
+  /** Whether an admitted destruction has not settled yet. */
   get hasPendingOperations(): boolean {
     for (const record of this.#records.values()) {
-      if (record.creation !== undefined || record.destruction !== undefined) return true;
+      if (record.destruction !== undefined) return true;
     }
     return false;
   }
@@ -290,7 +254,7 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     return destruction;
   }
 
-  /** Terminally close creation, settle admitted work, and destroy every loop. */
+  /** Terminally close registration and destroy every loop. */
   destroyAll(): Promise<void> {
     try {
       assertLoopManagerMutationAllowed(this, "shut down LoopManager");
@@ -299,7 +263,7 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     }
     if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
 
-    this.#acceptingCreations = false;
+    this.#acceptingRegistrations = false;
     this.#acceptingDestructions = false;
     const records = [...this.#records.values()];
     const shutdown = this.destroyAllRecords(records);
@@ -309,13 +273,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
 
   private async destroyAllRecords(records: LoopLifecycleRecord<TLoop>[]): Promise<void> {
     const errors: unknown[] = [];
-
-    const creationResults = await Promise.allSettled(
-      records.flatMap(record => record.creation === undefined ? [] : [record.creation]),
-    );
-    for (const result of creationResults) {
-      if (result.status === "rejected") errors.push(result.reason);
-    }
 
     for (const record of records) {
       const existingDestruction = record.destruction;
@@ -359,9 +316,9 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     }
   }
 
-  /** Register an already-created loop under this manager's lifecycle. */
-  registerExisting(loop: TLoop): void {
-    this.assertCreationAdmission(loop.id);
+  /** Transfer a fully constructed loop into this manager's lifecycle. */
+  register(loop: TLoop): void {
+    this.assertRegistrationAdmission(loop.id);
     this.#records.set(loop.id, { id: loop.id, loop });
   }
 
@@ -435,70 +392,20 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     if (wasPrimary) this.#primaryId = undefined;
   }
 
-  private assertCreationAdmission(id: string): void {
-    if (!this.#acceptingCreations) {
+  private assertRegistrationAdmission(id: string): void {
+    assertLoopManagerMutationAllowed(this, `register AgentLoop "${id}"`);
+    if (!this.#acceptingRegistrations) {
       const label = id ? ` "${id}"` : "";
-      throw new Error(`Cannot create AgentLoop${label}: LoopManager shutdown has begun`);
+      throw new Error(`Cannot register AgentLoop${label}: LoopManager shutdown has begun`);
     }
     if (this.#records.has(id)) throw new Error(`Loop "${id}" already exists`);
   }
 
-  private async createAndPublish(
-    config: TConfig,
-    record: LoopLifecycleRecord<TLoop>,
-  ): Promise<TLoop> {
-    const loop = await this.#createLoop(config, record.id);
-    if (loop.id !== record.id) {
-      const idError = new Error(
-        `AgentLoop factory returned id "${loop.id}" for requested id "${record.id}"`,
-      );
-      const cleanupErrors = await this.teardownLoop(loop, {
-        reason: "creation_failed",
-        requestedLoopId: record.id,
-      });
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [idError, ...cleanupErrors],
-          `Failed to discard mismatched AgentLoop "${loop.id}" cleanly`,
-        );
-      }
-      throw idError;
-    }
-    try {
-      await this.runLifecycleCallback(
-        "after_loop_create",
-        () => this.#onAfterLoopCreate(loop, config),
-      );
-    } catch (error) {
-      const cleanupErrors = await this.teardownLoop(loop, {
-        reason: "creation_failed",
-        requestedLoopId: record.id,
-      });
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          `Failed to complete creation and clean up AgentLoop "${loop.id}"`,
-        );
-      }
-      throw error;
-    }
-    record.loop = loop;
-    return loop;
-  }
-
   private async destroyRecord(
     record: LoopLifecycleRecord<TLoop>,
-    reason: Extract<LoopDestroyReason, "destroy" | "shutdown">,
+    reason: LoopDestroyReason,
   ): Promise<void> {
-    let loop = record.loop;
-    if (loop === undefined && record.creation !== undefined) {
-      try {
-        loop = await record.creation;
-      } catch {
-        if (this.#records.get(record.id) === record) this.#records.delete(record.id);
-        return;
-      }
-    }
+    const loop = record.loop;
     if (loop === undefined) {
       if (this.#records.get(record.id) === record) this.#records.delete(record.id);
       return;
@@ -533,7 +440,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
       loop,
       loopId: loop.id,
       reason: options.reason,
-      ...(options.requestedLoopId === undefined ? {} : { requestedLoopId: options.requestedLoopId }),
       ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
     };
     errors.push(...await this.runLifecycleCallback(

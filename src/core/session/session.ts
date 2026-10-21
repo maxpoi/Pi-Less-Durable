@@ -37,39 +37,37 @@ export interface PromptableSession<
 
 export interface SessionOptions<
   TLoop extends PromptableLoop<unknown>,
-  TConfig,
   TSessionId extends string = string,
 > {
   readonly id: TSessionId;
-  readonly loopManager: LoopManagerOptions<TLoop, TConfig>;
+  readonly loopManager?: LoopManagerOptions<TLoop>;
   /** Optional process registry whose session scope follows this concrete Core lifecycle. */
   readonly extensionRegistry?: TargetedLoopExtensionRegistry;
   /** Invoked after AgentLoop teardown settles, whether teardown succeeds or fails. */
-  readonly onClose?: (session: Session<TLoop, TConfig, TSessionId>) => void;
+  readonly onClose?: (session: Session<TLoop, TSessionId>) => void;
 }
 
 /**
  * Optional transport-neutral owner for one logical session and its AgentLoops.
  *
  * Standalone consumers may use AgentLoop or LoopManager directly. Hosts that
- * need a room/session concept can use this component for one LoopManager,
- * foreground prompt routing, targeted extension lifecycle binding, reload
- * admission, and terminal shutdown.
+ * need a session concept can use this component for one LoopManager, foreground
+ * prompt routing, targeted extension lifecycle binding, reload admission, and
+ * terminal shutdown.
  */
 export class Session<
   TLoop extends PromptableLoop<unknown>,
-  TConfig,
   TSessionId extends string = string,
 > {
   readonly id: TSessionId;
 
-  readonly #loopManager: LoopManager<TLoop, TConfig>;
+  readonly #loopManager: LoopManager<TLoop>;
   #extensionRegistry: TargetedLoopExtensionRegistry | undefined;
-  readonly #onClose: ((session: Session<TLoop, TConfig, TSessionId>) => void) | undefined;
+  readonly #onClose: ((session: Session<TLoop, TSessionId>) => void) | undefined;
   #state: SessionState = "open";
   #closePromise: Promise<void> | undefined;
 
-  constructor(options: SessionOptions<TLoop, TConfig, TSessionId>) {
+  constructor(options: SessionOptions<TLoop, TSessionId>) {
     this.id = options.id;
     this.#loopManager = new LoopManager({ ...options.loopManager, sessionId: this.id });
     this.#onClose = options.onClose;
@@ -122,14 +120,9 @@ export class Session<
     return this.#loopManager.on(type, handler);
   }
 
-  async create(config: TConfig): Promise<TLoop> {
-    this.#assertOpen("create an AgentLoop");
-    return this.#loopManager.create(config);
-  }
-
-  registerExisting(loop: TLoop): void {
+  register(loop: TLoop): void {
     this.#assertOpen("register an AgentLoop");
-    this.#loopManager.registerExisting(loop);
+    this.#loopManager.register(loop);
   }
 
   get(id: string): TLoop | undefined {
@@ -201,10 +194,8 @@ export class Session<
     }
     extensionRegistry.attachSession(this.id, this.#loopManager);
     this.#extensionRegistry = extensionRegistry;
-    this.#loopManager.on("before_loop_destroy", ({ loopId, reason }) => {
-      if (reason !== "creation_failed") {
-        extensionRegistry.removeLoop(this.id, loopId);
-      }
+    this.#loopManager.on("before_loop_destroy", ({ loopId }) => {
+      extensionRegistry.removeLoop(this.id, loopId);
     });
   }
 
@@ -271,7 +262,7 @@ export class Session<
   #assertReloadable(loopId?: string): void {
     this.#assertOpen("reload AgentLoops");
     if (this.#loopManager.hasPendingOperations) {
-      throw new Error(`Cannot reload session "${this.id}" while AgentLoop creation or destruction is pending`);
+      throw new Error(`Cannot reload session "${this.id}" while AgentLoop destruction is pending`);
     }
     const loops = loopId === undefined ? this.#loopManager.list() : [this.#requireLoop(loopId)];
     const busy = loops.find(loop => loop.isBusy);

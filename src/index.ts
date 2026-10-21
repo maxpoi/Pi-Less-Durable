@@ -1,20 +1,26 @@
 export {
+  Agent,
   AgentLoop,
+  AgentSession,
   KNOWN_THINKING_LEVELS,
   MESSAGE_BATCH_WINDOW_MS,
   MultiAgentPiSettingsManager,
   MessagePostQueue,
   ModelRuntime,
+  SessionManager,
+  TargetedLoopExtensionRegistry,
   accountAgentEvent,
   applyAssistantMessageTerminalState,
   bindExecutionEnv,
   createAgentLoopRunState,
+  createPiExtensionLoader,
   defaultAgentLoopLogger,
   executionEnvContext,
   extractResultText,
   formatAssistantErrorDetails,
   formatRetryDetails,
   forkBranchEntries,
+  forkConversationHistory,
   getCurrentAgentLoopExecution,
   getExternalSourcesPath,
   requireCurrentAgentLoopExecutionEnv,
@@ -35,6 +41,9 @@ export {
   type AgentLoopState,
   type AgentLoopUsageEntry,
   type AgentLoopUsageStore,
+  type AgentMessage,
+  type AgentOptions,
+  type AgentSessionConfig,
   type Api,
   type BatchingMessageQueue,
   type AgentEventAccounting,
@@ -55,12 +64,24 @@ export {
   type Model,
   type MultiAgentPiRetrySettings,
   type PendingToolExecution,
+  type PiExtensionLoaderOptions,
+  type SessionEntry,
+  type SettingsManager,
   type ThinkingLevel,
+  type ToolDefinition,
 } from "#core";
 export {
   SessionBridge,
   type SessionBridgeRunInput,
 } from "./bridge/session-bridge.js";
+export type {
+  AgentConfig,
+  ConversationHistory,
+} from "./agent/agent-config.js";
+export {
+  initializeConversationHistory,
+  type InitializeConversationHistoryOptions,
+} from "./agent/conversation-history.js";
 export {
   CODE_REVIEW_IDENTITY_PROMPT,
   CODE_REVIEW_METHODOLOGY_PROMPT,
@@ -82,11 +103,15 @@ export {
   type MultiAgentPiHarnessState,
   type ReloadMultiAgentPiHarnessOptions,
 } from "./multi-agent-pi-harness.js";
+export type {
+  SessionInfra,
+  SessionModelState,
+  SessionResourceState,
+} from "./session/session-infra.js";
 export {
   MultiAgentPiSession,
   PRIMARY_AGENT_LOOP_ID,
   createMultiAgentPiSession,
-  type CreateAgentLoopOptions,
   type CreateMultiAgentPiSessionOptions,
   type MultiAgentPiSessionState,
   type Session,

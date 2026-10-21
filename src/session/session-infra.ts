@@ -1,4 +1,5 @@
 import {
+  type AgentLoopLogger,
   type Api,
   type ExecutionEnvFactory,
   type Model,
@@ -6,6 +7,8 @@ import {
   type MultiAgentPiSettingsManager,
   type SessionInfra as SharedSessionInfra,
   type SessionPaths,
+  type SettingsManager,
+  type TargetedLoopExtensionRegistry,
   type ThinkingLevel,
 } from "#core";
 import type { SessionId } from "./session-types.js";
@@ -13,6 +16,8 @@ import type { SessionId } from "./session-types.js";
 export interface SessionModelState {
   readonly runtime: ModelRuntime;
   readonly settings: MultiAgentPiSettingsManager;
+  /** The same settings owner exposed at Pi's nominal AgentSession boundary. */
+  readonly piSettings: SettingsManager;
   getModel(): Model<Api>;
   getThinkingLevel(): ThinkingLevel;
 }
@@ -20,10 +25,14 @@ export interface SessionModelState {
 class ConfiguredSessionModelState implements SessionModelState {
   readonly runtime: ModelRuntime;
   readonly settings: MultiAgentPiSettingsManager;
+  readonly piSettings: SettingsManager;
 
   constructor(runtime: ModelRuntime, settings: MultiAgentPiSettingsManager) {
     this.runtime = runtime;
     this.settings = settings;
+    // Pi exposes a concrete class although AgentSession only consumes this
+    // object's public settings methods. Keep one settings authority.
+    this.piSettings = settings as unknown as SettingsManager;
   }
 
   getModel(): Model<Api> {
@@ -47,6 +56,8 @@ class ConfiguredSessionModelState implements SessionModelState {
 }
 
 export interface SessionResourceState {
+  readonly logger: AgentLoopLogger;
+  readonly extensionRegistry: TargetedLoopExtensionRegistry;
   readonly env?: ExecutionEnvFactory<SessionId>;
 }
 
@@ -61,6 +72,8 @@ export interface CreateSessionInfraOptions {
   readonly paths: SessionPaths;
   readonly modelRuntime: ModelRuntime;
   readonly settings: MultiAgentPiSettingsManager;
+  readonly logger: AgentLoopLogger;
+  readonly extensionRegistry: TargetedLoopExtensionRegistry;
   readonly env?: ExecutionEnvFactory<SessionId>;
 }
 
@@ -70,6 +83,8 @@ export function createSessionInfra(options: CreateSessionInfraOptions): SessionI
     paths: Object.freeze({ ...options.paths }),
     models: new ConfiguredSessionModelState(options.modelRuntime, options.settings),
     resources: Object.freeze({
+      logger: options.logger,
+      extensionRegistry: options.extensionRegistry,
       ...(options.env === undefined ? {} : { env: options.env }),
     }),
   });
