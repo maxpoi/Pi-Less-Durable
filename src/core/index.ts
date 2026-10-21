@@ -1,11 +1,20 @@
 /** Runtime bridge to the single Pi installation bundled with this package. */
 export {
+  Agent,
+  type AgentMessage,
+  type AgentOptions,
+} from "@earendil-works/pi-agent-core";
+export {
+  AgentSession,
   ModelRuntime,
   SessionManager,
   createAgentSession,
+  type AgentSessionConfig,
   type ExtensionAPI,
   type ExtensionFactory,
+  type SessionEntry,
   type SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 export type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -13,6 +22,7 @@ export {
   AgentLoop,
   assertAgentLoopId,
   forkBranchEntries,
+  forkConversationHistory,
   formatAgentLoopLogTag,
   getCurrentAgentLoopExecution,
   requireCurrentAgentLoopExecutionEnv,

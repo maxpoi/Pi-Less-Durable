@@ -1,21 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   Session as CoreSession,
-  assertAgentLoopId,
   type AgentLoop,
-  type AgentLoopEventHook,
   type AgentLoopLogger,
-  type Api,
   type ExecutionEnvFactory,
-  type ExtensionAPI,
-  type Model,
   type ModelRuntime,
   type MultiAgentPiSettingsManager,
   type SessionOptions as CoreSessionOptions,
   type TargetedLoopExtensionRegistry,
 } from "#core";
-import { createAgentLoop as createOwnedAgentLoop } from "../agent-loop/create-agent-loop.js";
 import { createSessionInfra, type SessionInfra } from "./session-infra.js";
 import type { Session, SessionId } from "./session-types.js";
 
@@ -28,14 +22,6 @@ export type {
 } from "./session-types.js";
 
 export const PRIMARY_AGENT_LOOP_ID = "main";
-
-export interface CreateAgentLoopOptions {
-  readonly id?: string;
-  readonly loopTag?: string;
-  readonly model?: Model<Api>;
-  readonly onEvent?: AgentLoopEventHook;
-  readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
-}
 
 /** Consumer-owned identity and workspace for an initially unbound Session. */
 export interface CreateMultiAgentPiSessionOptions {
@@ -56,11 +42,7 @@ interface MultiAgentPiSessionRuntime {
   readonly onClosed: (session: MultiAgentPiSession) => void;
 }
 
-type MultiAgentPiCoreSessionOptions = CoreSessionOptions<
-  AgentLoop,
-  CreateAgentLoopOptions,
-  SessionId
->;
+type MultiAgentPiCoreSessionOptions = CoreSessionOptions<AgentLoop, SessionId>;
 
 interface MultiAgentPiSessionConstruction {
   readonly cwd: string;
@@ -69,7 +51,7 @@ interface MultiAgentPiSessionConstruction {
 }
 
 export class MultiAgentPiSession
-  extends CoreSession<AgentLoop, CreateAgentLoopOptions, SessionId>
+  extends CoreSession<AgentLoop, SessionId>
   implements Session {
   readonly #cwd: string;
   readonly #sessionDir: string | undefined;
@@ -97,16 +79,6 @@ export class MultiAgentPiSession
     session = new MultiAgentPiSession(
       {
         id,
-        loopManager: {
-          getId: loopOptions => {
-            const loopId = loopOptions.id?.trim() ?? randomUUID();
-            assertAgentLoopId(loopId);
-            return loopId;
-          },
-          createLoop: (loopOptions, loopId) => session.#createLoop(loopOptions, loopId),
-          onAfterLoopCreate: (loop, loopOptions) =>
-            session.#configureCreatedLoop(loop, loopOptions),
-        },
         onClose: () => session.#runtime?.onClosed(session),
       },
       {
@@ -127,10 +99,12 @@ export class MultiAgentPiSession
     const sessionDir = this.#sessionDir === undefined
       ? resolve(runtime.configDir, "sessions", this.#defaultSessionDirectoryName)
       : resolve(this.#sessionDir);
-    const infra = createSessionInfra({
+    this.#infra = createSessionInfra({
       id: this.id,
       modelRuntime: runtime.modelRuntime,
       settings: runtime.settings,
+      logger: runtime.logger,
+      extensionRegistry: runtime.extensionRegistry,
       ...(runtime.env === undefined ? {} : { env: runtime.env }),
       paths: {
         cwd: this.#cwd,
@@ -140,8 +114,22 @@ export class MultiAgentPiSession
     });
 
     this.bindExtensionRegistry(runtime.extensionRegistry);
-    this.#infra = infra;
     this.#runtime = runtime;
+  }
+
+  /** Shared immutable dependencies for constructing runtimes registered with this Session. */
+  get infra(): SessionInfra {
+    if (this.#infra === undefined) {
+      throw new Error(
+        `MultiAgentPiSession "${this.id}" must be added to a Harness before its infrastructure is available`,
+      );
+    }
+    return this.#infra;
+  }
+
+  override register(loop: AgentLoop): void {
+    void this.infra;
+    super.register(loop);
   }
 
   override setPrimary(id: string): AgentLoop {
@@ -152,44 +140,6 @@ export class MultiAgentPiSession
     }
     return super.setPrimary(id);
   }
-
-  #requireRuntime(): {
-    readonly runtime: MultiAgentPiSessionRuntime;
-    readonly infra: SessionInfra;
-  } {
-    if (this.#runtime === undefined || this.#infra === undefined) {
-      throw new Error(
-        `MultiAgentPiSession "${this.id}" must be added to a Harness before creating AgentLoops`,
-      );
-    }
-    return { runtime: this.#runtime, infra: this.#infra };
-  }
-
-  #getDefaultModel(): Model<Api> {
-    const runtime = this.#requireRuntime().infra;
-    return (this.primary?.session.model as Model<Api> | undefined) ?? runtime.models.getModel();
-  }
-
-  #createLoop(loopOptions: CreateAgentLoopOptions, loopId: string): Promise<AgentLoop> {
-    const runtime = this.#requireRuntime();
-    return createOwnedAgentLoop(
-      runtime.infra,
-      {
-        ...loopOptions,
-        id: loopId,
-        loopDir: loopId === PRIMARY_AGENT_LOOP_ID
-          ? runtime.infra.paths.sessionDir
-          : join(runtime.infra.paths.sessionDir, "loops", loopId),
-        model: loopOptions.model ?? this.#getDefaultModel(),
-        logger: runtime.runtime.logger,
-      },
-      runtime.runtime.extensionRegistry,
-    );
-  }
-
-  #configureCreatedLoop(loop: AgentLoop, loopOptions: CreateAgentLoopOptions): Promise<void> | undefined {
-    return loopOptions.model === undefined ? loop.setModel(this.#getDefaultModel()) : undefined;
-  }
 }
 
 export function createSessionId(id?: string): SessionId {
@@ -199,7 +149,7 @@ export function createSessionId(id?: string): SessionId {
   return normalized as SessionId;
 }
 
-/** Create an empty Session; Harness admission binds shared runtime dependencies before loops are created. */
+/** Create an empty Session; Harness admission binds shared runtime dependencies. */
 export function createMultiAgentPiSession(
   options: CreateMultiAgentPiSessionOptions = {},
 ): MultiAgentPiSession {

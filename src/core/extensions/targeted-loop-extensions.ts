@@ -31,7 +31,7 @@ interface NormalizedTarget {
   readonly exactLoopIds?: Set<string>;
 }
 
-type AnyLoopManager = LoopManager<any, any>;
+type AnyLoopManager = LoopManager<any>;
 
 /**
  * Process/session targeting declarations materialized by each matching loop's

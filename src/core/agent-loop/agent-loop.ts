@@ -651,11 +651,25 @@ export class AgentLoop {
   }
 }
 
-export function forkBranchEntries(runner: {
+interface ConversationHistorySource {
   getBranch(fromId?: string): SessionEntry[];
   getLeafId(): string | null;
-}): SessionEntry[] {
-  const leafId = runner.getLeafId();
+}
+
+/** Copy one branch into canonical history suitable for a new agent session. */
+export function forkConversationHistory(
+  source: ConversationHistorySource,
+  fromId?: string,
+): SessionEntry[] {
+  const leafId = fromId ?? source.getLeafId();
   if (!leafId) return [];
-  return runner.getBranch(leafId);
+  return source.getBranch(leafId);
+}
+
+/** @deprecated Use forkConversationHistory(). */
+export function forkBranchEntries(
+  source: ConversationHistorySource,
+  fromId?: string,
+): SessionEntry[] {
+  return forkConversationHistory(source, fromId);
 }

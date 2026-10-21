@@ -3,6 +3,7 @@ import {
   MultiAgentPiSettingsManager,
   TargetedLoopExtensionRegistry,
   defaultAgentLoopLogger,
+  setupCompactionStripExtension,
   type AgentLoopLogger,
   type ExecutionEnvFactory,
   type ExtensionFactory,
@@ -70,6 +71,11 @@ export class MultiAgentPiHarness {
     );
     this.#logger = options.logger ?? defaultAgentLoopLogger;
     this.#env = options.env;
+    this.#extensionRegistry.register(
+      undefined,
+      "all",
+      pi => setupCompactionStripExtension(pi, this.#logger),
+    );
   }
 
   get configDir(): string {
