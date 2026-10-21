@@ -104,8 +104,15 @@ export async function requireCurrentAgentLoopExecutionEnv(
   return use;
 }
 
+const AGENT_LOOP_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
+
 export function assertAgentLoopId(id: string): void {
   if (!id.trim()) throw new Error("AgentLoop id must not be empty");
+  if (!AGENT_LOOP_ID_PATTERN.test(id)) {
+    throw new Error(
+      "AgentLoop id must be one lowercase filesystem-safe segment using letters, numbers, dots, underscores, or hyphens",
+    );
+  }
 }
 
 /** Complete transport-neutral AgentLoop implementation over one native Pi runtime. */

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   AgentLoop,
   SessionManager,
@@ -84,7 +85,11 @@ export async function createAgentLoop(
     );
   }
 
-  const sessionManager = SessionManager.inMemory(infra.paths.cwd);
+  const sessionManager = SessionManager.open(
+    join(options.loopDir, "context.jsonl"),
+    options.loopDir,
+    infra.paths.cwd,
+  );
   const { session } = await createAgentSession({
     cwd: infra.paths.cwd,
     agentDir: infra.paths.configDir,
