@@ -4,6 +4,7 @@ import {
   Session as CoreSession,
   assertAgentLoopId,
   type AgentLoop,
+  type AgentLoopEventHook,
   type AgentLoopLogger,
   type Api,
   type ExecutionEnvFactory,
@@ -32,6 +33,7 @@ export interface CreateAgentLoopOptions {
   readonly id?: string;
   readonly loopTag?: string;
   readonly model?: Model<Api>;
+  readonly onEvent?: AgentLoopEventHook;
   readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
 }
 

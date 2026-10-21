@@ -49,7 +49,7 @@ interface PendingBatch {
 
 /**
  * Serial output queue for one foreground, isolated, or background source.
- * Compatibility keys are opaque; OutputPipe owns semantic classification.
+ * Compatibility keys are opaque; callers own semantic classification.
  */
 export class MessagePostQueue implements BatchingMessageQueue {
 	private queueChain = Promise.resolve();

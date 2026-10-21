@@ -12,7 +12,6 @@ import {
 import { formatAssistantErrorDetails, formatRetryDetails } from "./error-details.js";
 import type {
   AgentLoopCompactionPolicy,
-  AgentLoopLogContext,
   AgentLoopLogger,
 } from "./types.js";
 
@@ -27,9 +26,7 @@ export interface AgentLoopEventHandlerOptions {
   readonly agent: Agent;
   readonly sessionManager: SessionManager;
   readonly logger: AgentLoopLogger;
-  readonly logContext: AgentLoopLogContext;
   readonly logTag: string;
-  readonly accounting: AgentEventAccounting;
   readonly reportFailure: (error: unknown) => void;
   readonly compaction?: AgentLoopCompactionPolicy;
 }
@@ -63,11 +60,9 @@ export function handleAgentLoopEvent(
   options: AgentLoopEventHandlerOptions,
 ): void {
   const {
-    accounting,
     agent,
     compaction,
     logTag,
-    logContext,
     logger,
     reportFailure,
     sessionManager,
@@ -84,25 +79,9 @@ export function handleAgentLoopEvent(
         reportFailure(error);
       }
     }, 10_000);
-    logger.responseStart?.(logContext);
   }
   if (event.type === "message_update" || event.type === "message_end") {
     clearAgentLoopWaitingHeartbeat(state);
-  }
-
-  if (event.type === "tool_execution_start") {
-    logger.toolStart?.(
-      logContext,
-      event.toolName,
-      event.args?.label || event.toolName,
-      event.args as Record<string, unknown>,
-    );
-  }
-  if (event.type === "tool_execution_end") {
-    const durationMs = accounting.toolDurationMs ?? 0;
-    const result = extractResultText(event.result);
-    if (event.isError) logger.toolError?.(logContext, event.toolName, durationMs, result);
-    else logger.toolSuccess?.(logContext, event.toolName, durationMs, result);
   }
 
   if (event.type === "message_end") {
@@ -136,14 +115,6 @@ export function handleAgentLoopEvent(
         );
       }
 
-      for (const part of assistantMessage.content || []) {
-        if (part.type === "thinking" && part.thinking) logger.thinking?.(logContext, part.thinking);
-      }
-      const responseText = (assistantMessage.content || [])
-        .filter(part => part.type === "text" && part.text)
-        .map(part => part.type === "text" ? part.text : "")
-        .join("\n");
-      if (responseText.trim()) logger.response?.(logContext, responseText);
     }
   }
 
@@ -189,7 +160,7 @@ export interface AgentLoopEventDiagnosticOptions {
   readonly accounting: AgentEventAccounting;
 }
 
-/** Emit diagnostics that depend on completed event accounting. */
+/** Emit event diagnostics through the ordinary framework logger. */
 export function logAgentLoopEventDiagnostics(
   event: AgentSessionEvent,
   options: AgentLoopEventDiagnosticOptions,
@@ -204,11 +175,21 @@ export function logAgentLoopEventDiagnostics(
     logger.info(`[${logTag}] Agent started`);
   } else if (event.type === "agent_end") {
     logger.info(`[${logTag}] Agent ended — ${runState.turnCount} turns, ${runState.toolCount} tools`);
+  } else if (event.type === "message_start" && event.message?.role === "assistant") {
+    logger.info(`[${logTag}] ⏳ Waiting for LLM response...`);
   } else if (event.type === "tool_execution_start") {
-    logger.info(`[${logTag}] Tool #${runState.toolCount}: ${event.toolName}`);
+    const label = event.args?.label || event.toolName;
+    const labelSuffix = label === event.toolName ? "" : `: ${label}`;
+    logger.info(
+      `[${logTag}] Tool started: ${event.toolName}${labelSuffix}`,
+      JSON.stringify(event.args, null, 2),
+    );
   } else if (event.type === "tool_execution_end") {
     const duration = ((accounting.toolDurationMs ?? 0) / 1000).toFixed(1);
-    logger.info(`[${logTag}] Tool ${event.isError ? "error" : "done"}: ${event.toolName} (${duration}s)`);
+    const result = extractResultText(event.result);
+    const message = `[${logTag}] Tool ${event.isError ? "failed" : "succeeded"}: ${event.toolName} (${duration}s)`;
+    if (event.isError) logger.warning(message, result);
+    else logger.info(message, result);
   } else if (event.type === "message_end") {
     const assistantMessage = event.message as AssistantMessage;
     if (assistantMessage?.role === "assistant") {
@@ -216,6 +197,16 @@ export function logAgentLoopEventDiagnostics(
         logger.warning(`[${logTag}] Model error: ${assistantMessage.errorMessage}`);
       }
       logger.info(`[${logTag}] Message end (stopReason=${assistantMessage.stopReason ?? "?"})`);
+      for (const part of assistantMessage.content || []) {
+        if (part.type === "thinking" && part.thinking) {
+          logger.info(`[${logTag}] Thinking`, part.thinking);
+        }
+      }
+      const responseText = (assistantMessage.content || [])
+        .filter(part => part.type === "text" && part.text)
+        .map(part => part.type === "text" ? part.text : "")
+        .join("\n");
+      if (responseText.trim()) logger.info(`[${logTag}] Response`, responseText);
     }
   } else if (event.type === "message_update") {
     const assistantEvent = event.assistantMessageEvent;
