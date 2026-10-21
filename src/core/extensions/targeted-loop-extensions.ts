@@ -33,23 +33,6 @@ interface NormalizedTarget {
 
 type AnyLoopManager = LoopManager<any, any>;
 
-type TargetedLoopExtensionSessionOperation =
-  | {
-      readonly type: "attach" | "detach";
-      readonly sessionId: string;
-      readonly loopManager: AnyLoopManager;
-    }
-  | {
-      readonly type: "remove_loop";
-      readonly sessionId: string;
-      readonly loopId: string;
-    };
-
-/** Package-private capability used only by Core Session integration. */
-export const targetedLoopExtensionSessionBinding: unique symbol = Symbol(
-  "targetedLoopExtensionSessionBinding",
-);
-
 /**
  * Process/session targeting declarations materialized by each matching loop's
  * private Pi runtime. Core Session binds its authoritative LoopManager; hosts
@@ -62,33 +45,20 @@ export class TargetedLoopExtensionRegistry {
   readonly #sessionFileRegistrations = new Map<string, StoredRegistration[]>();
   readonly #sessionLoopManagers = new Map<string, AnyLoopManager>();
 
-  [targetedLoopExtensionSessionBinding](
-    operation: TargetedLoopExtensionSessionOperation,
-  ): void {
-    if (operation.type === "remove_loop") {
-      this.#removeExactLoopFromStore(
-        this.#sessionRegistrations,
-        operation.sessionId,
-        operation.loopId,
-      );
-      this.#removeExactLoopFromStore(
-        this.#sessionFileRegistrations,
-        operation.sessionId,
-        operation.loopId,
-      );
-      return;
+  attachSession(sessionId: string, loopManager: AnyLoopManager): void {
+    if (!sessionId) throw new Error("Targeted extension session requires a session id");
+    if (this.#sessionLoopManagers.has(sessionId)) {
+      throw new Error(`Targeted extension session is already attached for "${sessionId}"`);
     }
+    this.#sessionLoopManagers.set(sessionId, loopManager);
+  }
 
-    const { sessionId, loopManager } = operation;
-    if (operation.type === "attach") {
-      if (!sessionId) throw new Error("Targeted extension session requires a session id");
-      if (this.#sessionLoopManagers.has(sessionId)) {
-        throw new Error(`Targeted extension session is already attached for "${sessionId}"`);
-      }
-      this.#sessionLoopManagers.set(sessionId, loopManager);
-      return;
-    }
+  removeLoop(sessionId: string, loopId: string): void {
+    this.#removeExactLoopFromStore(this.#sessionRegistrations, sessionId, loopId);
+    this.#removeExactLoopFromStore(this.#sessionFileRegistrations, sessionId, loopId);
+  }
 
+  detachSession(sessionId: string, loopManager: AnyLoopManager): void {
     if (this.#sessionLoopManagers.get(sessionId) !== loopManager) return;
     this.#sessionLoopManagers.delete(sessionId);
     this.#sessionFileRegistrations.delete(sessionId);

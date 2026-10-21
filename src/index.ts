@@ -6,11 +6,11 @@ export {
   MessagePostQueue,
   ModelRuntime,
   OutputPipe,
-  Session,
   accountAgentEvent,
   applyAssistantMessageTerminalState,
   bindExecutionEnv,
   createAgentLoopRunState,
+  defaultAgentLoopLogger,
   executionEnvContext,
   extractResultText,
   formatAssistantErrorDetails,
@@ -69,19 +69,17 @@ export {
   type PhasedTextOutput,
   type PhasedTextPart,
   type PipeTarget,
-  type PromptableLoop,
-  type PromptableSession,
   type ResponseCompletion,
   type ResponseOutput,
   type ResponseVisibility,
   type RuntimeOutput,
   type RuntimeOutputKind,
-  type SessionOptions,
-  type SessionPromptOptions,
-  type SessionPromptResult,
-  type SessionState,
   type ThinkingLevel,
 } from "#core";
+export {
+  SessionBridge,
+  type SessionBridgeRunInput,
+} from "./bridge/session-bridge.js";
 export {
   CODE_REVIEW_IDENTITY_PROMPT,
   CODE_REVIEW_METHODOLOGY_PROMPT,
@@ -98,16 +96,20 @@ export {
 } from "./config/config-store.js";
 export {
   MultiAgentPiHarness,
-  type CreateMultiAgentPiSessionOptions,
   type MultiAgentPiHarnessExtensionTarget,
   type MultiAgentPiHarnessOptions,
   type MultiAgentPiHarnessState,
   type ReloadMultiAgentPiHarnessOptions,
 } from "./multi-agent-pi-harness.js";
 export {
+  MultiAgentPiSession,
   PRIMARY_AGENT_LOOP_ID,
+  createMultiAgentPiSession,
   type CreateAgentLoopOptions,
-  type MultiAgentPiSession,
+  type CreateMultiAgentPiSessionOptions,
   type MultiAgentPiSessionState,
+  type Session,
   type SessionId,
+  type SessionPromptOptions,
+  type SessionState,
 } from "./session/multi-agent-pi-session.js";

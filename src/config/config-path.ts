@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 export type MultiAgentPiHarnessConfigErrorCode =
-  | "missing_config_dir"
   | "defaults_not_found"
   | "defaults_read_failed"
   | "defaults_invalid_json"
@@ -34,13 +33,7 @@ function normalizeDirectory(path: string): string {
 }
 
 export function resolveMultiAgentPiHarnessConfigDirectory(configDir?: string): string {
-  const candidate = configDir === undefined ? process.env.MULTI_AGENT_PI_CONFIG_DIR : configDir;
-  if (candidate === undefined || candidate.trim() === "") {
-    throw new MultiAgentPiHarnessConfigError(
-      "missing_config_dir",
-      "MULTI_AGENT_PI_CONFIG_DIR",
-      "MultiAgentPiHarness requires configDir in its constructor or MULTI_AGENT_PI_CONFIG_DIR in the environment",
-    );
-  }
+  const configured = configDir === undefined ? process.env.MULTI_AGENT_PI_CONFIG_DIR : configDir;
+  const candidate = configured?.trim() ? configured : join(homedir(), ".multiagentpi", "config");
   return normalizeDirectory(candidate);
 }

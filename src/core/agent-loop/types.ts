@@ -104,6 +104,8 @@ export interface AgentLoopResult {
   readonly turns: number;
   readonly toolCalls: number;
   readonly aborted: boolean;
+  readonly stopReason: string;
+  readonly errorMessage?: string;
   readonly usage: {
     readonly input: number;
     readonly output: number;
