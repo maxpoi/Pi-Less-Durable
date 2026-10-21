@@ -13,7 +13,7 @@ export interface SessionBridgeRunInput {
 /**
  * Transport-neutral boundary that delegates message-application input to a Session.
  *
- * The Bridge does not own the Session, AgentLoops, or their output bindings.
+ * The Bridge does not own the Session or AgentLoops; presentation and output routing are application-owned.
  */
 export class SessionBridge {
   readonly #session: Session;

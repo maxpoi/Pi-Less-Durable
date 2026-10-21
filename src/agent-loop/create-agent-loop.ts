@@ -6,6 +6,7 @@ import {
   createAgentSession,
   createCompactionStripExtension,
   createPiExtensionLoader,
+  type AgentLoopEventHook,
   type AgentLoopLogger,
   type Api,
   type ExtensionAPI,
@@ -20,6 +21,7 @@ export interface CreateAgentLoopOptions {
   readonly loopDir: string;
   readonly loopTag?: string;
   readonly model?: Model<Api>;
+  readonly onEvent?: AgentLoopEventHook;
   /** Install the host's complete prompt policy through Pi's native extension API. */
   readonly configurePrompt: (pi: ExtensionAPI) => Promise<void> | void;
   readonly logger: AgentLoopLogger;
@@ -119,6 +121,7 @@ export async function createAgentLoop(
     id: options.id,
     sessionId: infra.id,
     ...(options.loopTag === undefined ? {} : { loopTag: options.loopTag }),
+    ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
     runtime: {
       agent: session.agent,
       session,

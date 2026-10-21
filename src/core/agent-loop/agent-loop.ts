@@ -35,11 +35,9 @@ import type {
   AgentLoopExecutionContext,
   AgentLoopLifecycle,
   AgentLoopLifecycleKind,
-  AgentLoopLogContext,
   AgentLoopLogger,
   AgentLoopModelChangeOptions,
   AgentLoopOptions,
-  AgentLoopOutput,
   AgentLoopResult,
   AgentLoopRuntime,
   AgentLoopState,
@@ -68,7 +66,6 @@ type AgentLoopFailureTag =
   | "event-diagnostics"
   | "event-accounting"
   | "abort-interrupted-request"
-  | "output"
   | "usage-store";
 
 type ActiveAgentLoopLifecycle = {
@@ -122,7 +119,6 @@ export class AgentLoop {
 
   protected _state: AgentLoopState = "idle";
   protected _runState: AgentLoopRunState;
-  protected _output: AgentLoopOutput | null = null;
   protected _activeLifecycle: ActiveAgentLoopLifecycle | null = null;
 
   readonly #runtime: AgentLoopRuntime;
@@ -165,7 +161,6 @@ export class AgentLoop {
   get activeLifecycleKind(): AgentLoopLifecycleKind | null { return this._activeLifecycle?.kind ?? null; }
   get isBusy(): boolean { return this._activeLifecycle !== null; }
   get runState(): AgentLoopRunState { return this._runState; }
-  get isAttached(): boolean { return this._output !== null; }
   get loopTag(): string { return this.#loopTag; }
   get logTag(): string { return formatAgentLoopLogTag(this.#sessionName, this.#sessionId, this.loopTag); }
   get messages(): AgentMessage[] { return this.#runtime.sessionManager.buildSessionProjection().messages; }
@@ -177,9 +172,6 @@ export class AgentLoop {
   setSessionName(sessionName: string | undefined): void {
     this.#sessionName = sessionName?.trim() || undefined;
   }
-
-  attach(output: AgentLoopOutput): void { this._output = output; }
-  detach(): void { this._output = null; }
 
   /** Resolve a host-owned Pi environment afresh for one direct use. */
   async resolveExecutionEnv(context: Context): Promise<ExecutionEnv | undefined> {
@@ -379,14 +371,6 @@ export class AgentLoop {
     if (this._state !== "running" && this._state !== "paused") return false;
     this._state = "aborted";
     this._runState.stopReason = "aborted";
-    const output = this._output;
-    if (output) {
-      try {
-        output.abortLifecycle();
-      } catch (error) {
-        this.#recordEventFailure("output", error);
-      }
-    }
     void this.#runtime.session.abort();
     return true;
   }
@@ -410,17 +394,6 @@ export class AgentLoop {
     return `[SYSTEM: You were stopped by the user while you were working on user's previous prompt. Following is user's new prompt.]\n\n${message}`;
   }
 
-  async #postTerminalErrorIfNeeded(): Promise<void> {
-    if (this._runState.stopReason !== "error") return;
-    const message = this._runState.lastError;
-    const output = this._output;
-    if (!message || !output) return;
-    await this.#runEventOperation(
-      "output",
-      () => output.handleTerminalError({ message }),
-    );
-  }
-
   #subscribeEvents(): void {
     if (this.#unsubscribe) return;
     this.#unsubscribe = this.#runtime.session.subscribe(event => {
@@ -433,7 +406,7 @@ export class AgentLoop {
   async #processEvent(event: AgentSessionEvent): Promise<void> {
     // Event order is intentional:
     // run-state update -> maintenance/semantic logs -> progress diagnostics
-    // -> optional output -> usage persistence -> application observer.
+    // -> usage persistence -> application observer.
 
     // Apply event-derived execution state before any downstream consumer.
     let accounting: AgentEventAccounting = {};
@@ -483,10 +456,10 @@ export class AgentLoop {
       );
     }
 
-    // Perform maintenance and emit semantic logs such as tool results, model details, and responses.
+    // Perform context maintenance and emit framework diagnostics.
     await this.#runEventOperation(
       "built-in-event-handler",
-      () => this.#handleGenericEvent(event, accounting),
+      () => this.#handleGenericEvent(event),
     );
 
     // Emit baseline lifecycle/progress diagnostics using the updated counters and timings.
@@ -499,15 +472,6 @@ export class AgentLoop {
         accounting,
       });
     });
-
-    // Presentation is optional and cannot fail the execution.
-    const output = this._output;
-    if (output && !abortedRequest) {
-      await this.#runEventOperation(
-        "output",
-        () => output.handleEvent(event),
-      );
-    }
 
     // Persist the accounting snapshot without mutating execution state.
     await this.#runEventOperation(
@@ -563,29 +527,15 @@ export class AgentLoop {
     if (this.#isAborted()) this._runState.stopReason = "aborted";
   }
 
-  #sessionLabel(): string {
-    return this.#sessionName || this.#sessionId;
-  }
-
-  #logContext(): AgentLoopLogContext {
-    return {
-      scopeId: this.#sessionId,
-      scopeName: this.#sessionLabel(),
-      tag: this.loopTag,
-    };
-  }
-
   #isAborted(): boolean {
     return this._state === "aborted";
   }
 
-  #handleGenericEvent(event: AgentSessionEvent, accounting: AgentEventAccounting): void {
+  #handleGenericEvent(event: AgentSessionEvent): void {
     handleAgentLoopEvent(event, this.#eventHandlerState, {
-      accounting,
       agent: this.#runtime.agent,
       sessionManager: this.#runtime.sessionManager,
       logger: this.#logger,
-      logContext: this.#logContext(),
       logTag: this.logTag,
       reportFailure: error => this.#recordEventFailure("built-in-event-handler", error),
       ...(this.#compactionPolicy === undefined ? {} : { compaction: this.#compactionPolicy }),
@@ -618,7 +568,6 @@ export class AgentLoop {
   async #finishPromptRun(): Promise<void> {
     await waitForRetrySettle(this.#runtime.session, this.#logger, this.logTag);
     await this.#settleEventQueue();
-    await this.#postTerminalErrorIfNeeded();
     stripProcessedImages(this.#runtime.sessionManager, this.#logger, this.logTag);
     await autoCompactIfNeeded(
       this.#runtime.session,
@@ -679,7 +628,6 @@ export class AgentLoop {
     await settle(() => this.waitForIdle());
     await settle(() => this.#settleEventQueue());
 
-    this.detach();
     clearAgentLoopWaitingHeartbeat(this.#eventHandlerState);
     if (this.#unsubscribe) {
       const unsubscribe = this.#unsubscribe;

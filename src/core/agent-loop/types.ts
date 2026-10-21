@@ -16,36 +16,9 @@ export interface AgentLoopModelChangeOptions {
   readonly persist?: boolean;
 }
 
-export interface AgentLoopLogContext {
-  readonly scopeId: string;
-  readonly scopeName?: string;
-  readonly tag: string;
-}
-
 export interface AgentLoopLogger {
   info(message: string, details?: string): void;
   warning(message: string, details?: string): void;
-  responseStart?(context: AgentLoopLogContext): void;
-  toolStart?(
-    context: AgentLoopLogContext,
-    toolName: string,
-    label: string,
-    args: Record<string, unknown>,
-  ): void;
-  toolError?(
-    context: AgentLoopLogContext,
-    toolName: string,
-    durationMs: number,
-    result: string,
-  ): void;
-  toolSuccess?(
-    context: AgentLoopLogContext,
-    toolName: string,
-    durationMs: number,
-    result: string,
-  ): void;
-  thinking?(context: AgentLoopLogContext, text: string): void;
-  response?(context: AgentLoopLogContext, text: string): void;
 }
 
 export interface AgentLoopCompactionPolicy {
@@ -56,18 +29,6 @@ export interface AgentLoopCompactionPolicy {
 export interface AgentLoopExecutionContext {
   readonly loopId: string;
   readonly loop: AgentLoop;
-}
-
-export interface AgentLoopTerminalError {
-  readonly message: string;
-}
-
-/** Optional presentation attachment; AgentLoop knows no output implementation details. */
-export interface AgentLoopOutput {
-  handleEvent(event: AgentSessionEvent): Promise<void>;
-  handleTerminalError(error: AgentLoopTerminalError): void;
-  /** Flush admitted presentation and reject later output from the aborted lifecycle. */
-  abortLifecycle(): void;
 }
 
 export interface AgentLoopUsageEntry {
@@ -115,7 +76,7 @@ export interface AgentLoopResult {
   };
 }
 
-/** Serialized application observer invoked after core state, output, and usage handling. */
+/** Serialized application observer invoked after core state and usage handling. */
 export type AgentLoopEventHook = (event: AgentSessionEvent) => void | Promise<void>;
 
 export interface AgentLoopOptions {
