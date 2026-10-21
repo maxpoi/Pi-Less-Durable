@@ -4,7 +4,7 @@ export interface OwnedLoop {
   readonly id: string;
   readonly isBusy: boolean;
   readonly activeLifecycleKind: string | null;
-  reloadAfter(prerequisite: Promise<void>): Promise<readonly string[]>;
+  reload(): Promise<readonly string[]>;
   destroy(): Promise<void>;
 }
 
@@ -97,11 +97,6 @@ interface LoopTeardownOptions {
   readonly afterDestroy?: () => void;
 }
 
-interface CollectionReservation {
-  readonly settled: Promise<void>;
-  release(): void;
-}
-
 /**
  * Shared lifecycle and explicit primary/selected ownership for one session's AgentLoops.
  *
@@ -124,7 +119,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
   #selectedId: string | undefined;
   #acceptingCreations = true;
   #acceptingDestructions = true;
-  #collectionReservation: CollectionReservation | undefined;
   #shutdownPromise: Promise<void> | undefined;
 
   constructor(options: LoopManagerOptions<TLoop, TConfig>) {
@@ -162,36 +156,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
       if (record.creation !== undefined || record.destruction !== undefined) return true;
     }
     return false;
-  }
-
-  /**
-   * Keep the published loop collection stable for a session-owned operation.
-   * New create/destroy calls reject until the returned release function runs.
-   */
-  reserveStableCollection(): () => void {
-    if (!this.#acceptingCreations) {
-      throw new Error("Cannot reserve LoopManager collection after shutdown has begun");
-    }
-    if (this.#collectionReservation !== undefined) {
-      throw new Error("LoopManager collection is already reserved");
-    }
-    if (this.hasPendingOperations) {
-      throw new Error("Cannot reserve LoopManager collection while loop creation or destruction is pending");
-    }
-
-    let resolveSettled!: () => void;
-    let released = false;
-    const reservation: CollectionReservation = {
-      settled: new Promise<void>(resolve => { resolveSettled = resolve; }),
-      release: () => {
-        if (released) return;
-        released = true;
-        if (this.#collectionReservation === reservation) this.#collectionReservation = undefined;
-        resolveSettled();
-      },
-    };
-    this.#collectionReservation = reservation;
-    return reservation.release;
   }
 
   /** Register a typed manager event hook. Returns an idempotent unsubscribe function. */
@@ -266,36 +230,23 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     return loops;
   }
 
-  /** Reload one published loop, or every loop sequentially after claiming the complete target scope. */
-  async reload(
-    id?: string,
-    prerequisite: Promise<void> = Promise.resolve(),
-  ): Promise<LoopReloadError[]> {
+  /** Reload idle loops sequentially in registration order. */
+  async reload(id?: string): Promise<LoopReloadError[]> {
     const loops = id === undefined ? this.list() : [this.requirePublishedLoop(id)];
     const busy = loops.find(loop => loop.isBusy);
-    if (busy) {
+    if (busy !== undefined) {
       throw new Error(`Cannot reload loop "${busy.id}" while ${busy.activeLifecycleKind} is active`);
     }
-    const reloads: Promise<readonly string[]>[] = [];
-    let previousReload = Promise.resolve();
-    for (const loop of loops) {
-      const gate = Promise.all([prerequisite, previousReload]).then(() => undefined);
-      const reload = loop.reloadAfter(gate);
-      reloads.push(reload);
-      previousReload = reload.then(() => undefined, () => undefined);
-    }
 
-    const results = await Promise.allSettled(reloads);
     const errors: LoopReloadError[] = [];
-    for (let index = 0; index < results.length; index += 1) {
-      const loop = loops[index]!;
-      const result = results[index]!;
-      if (result.status === "fulfilled") {
-        for (const message of result.value) errors.push({ loopId: loop.id, message });
-      } else {
+    for (const loop of loops) {
+      try {
+        const messages = await loop.reload();
+        for (const message of messages) errors.push({ loopId: loop.id, message });
+      } catch (error) {
         errors.push({
           loopId: loop.id,
-          message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          message: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -315,10 +266,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     if (!this.#acceptingDestructions) {
       return Promise.reject(new Error(`Cannot destroy AgentLoop "${id}": LoopManager shutdown has begun`));
     }
-    if (this.#collectionReservation !== undefined) {
-      return Promise.reject(new Error(`Cannot destroy AgentLoop "${id}": LoopManager collection is reserved`));
-    }
-
     let admitDestruction!: () => void;
     let rejectDestruction!: (error: unknown) => void;
     const admission = new Promise<void>((resolve, reject) => {
@@ -355,16 +302,12 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     this.#acceptingCreations = false;
     this.#acceptingDestructions = false;
     const records = [...this.#records.values()];
-    const shutdown = this.destroyAllRecords(records, this.#collectionReservation);
+    const shutdown = this.destroyAllRecords(records);
     this.#shutdownPromise = shutdown;
     return shutdown;
   }
 
-  private async destroyAllRecords(
-    records: LoopLifecycleRecord<TLoop>[],
-    reservation: CollectionReservation | undefined,
-  ): Promise<void> {
-    if (reservation !== undefined) await reservation.settled;
+  private async destroyAllRecords(records: LoopLifecycleRecord<TLoop>[]): Promise<void> {
     const errors: unknown[] = [];
 
     const creationResults = await Promise.allSettled(
@@ -496,9 +439,6 @@ export class LoopManager<TLoop extends OwnedLoop, TConfig> {
     if (!this.#acceptingCreations) {
       const label = id ? ` "${id}"` : "";
       throw new Error(`Cannot create AgentLoop${label}: LoopManager shutdown has begun`);
-    }
-    if (this.#collectionReservation !== undefined) {
-      throw new Error(`Cannot create AgentLoop "${id}": LoopManager collection is reserved`);
     }
     if (this.#records.has(id)) throw new Error(`Loop "${id}" already exists`);
   }

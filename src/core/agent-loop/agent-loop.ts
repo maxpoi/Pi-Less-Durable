@@ -183,20 +183,11 @@ export class AgentLoop {
     return this.reloadExtensions();
   }
 
-  reloadAfter(prerequisite: Promise<void>): Promise<string[]> {
-    return this.#reloadExtensions(prerequisite);
-  }
-
   async reloadExtensions(): Promise<string[]> {
-    return this.#reloadExtensions();
-  }
-
-  #reloadExtensions(prerequisite?: Promise<void>): Promise<string[]> {
     if (this._state === "destroyed") {
       throw new Error(`Cannot reload extensions for destroyed loop "${this.id}"`);
     }
     return this.#startLifecycle("reload", async () => {
-      if (prerequisite) await prerequisite;
       await this.#lifecycleHooks?.onBeforeReloadStart?.();
       await this.#runtime.session.reload();
       const errors = this.#runtime.session.resourceLoader.getExtensions().errors
@@ -649,6 +640,8 @@ export class AgentLoop {
       turns: state.turnCount,
       toolCalls: state.toolCount,
       aborted: this._state === "aborted",
+      stopReason: state.stopReason,
+      ...(state.lastError === undefined ? {} : { errorMessage: state.lastError }),
       usage: state.usage,
     };
     this.#logger.info(

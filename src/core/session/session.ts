@@ -7,10 +7,7 @@ import {
   type LoopManagerOptions,
   type OwnedLoop,
 } from "../agent-loop/loop-manager.js";
-import {
-  targetedLoopExtensionSessionBinding,
-  type TargetedLoopExtensionRegistry,
-} from "../extensions/targeted-loop-extensions.js";
+import type { TargetedLoopExtensionRegistry } from "../extensions/targeted-loop-extensions.js";
 
 export type SessionState = "open" | "reloading" | "closed";
 
@@ -47,6 +44,7 @@ export interface SessionOptions<
   readonly loopManager: LoopManagerOptions<TLoop, TConfig>;
   /** Optional process registry whose session scope follows this concrete Core lifecycle. */
   readonly extensionRegistry?: TargetedLoopExtensionRegistry;
+  /** Invoked after AgentLoop teardown settles, whether teardown succeeds or fails. */
   readonly onClose?: (session: Session<TLoop, TConfig, TSessionId>) => void;
 }
 
@@ -56,7 +54,7 @@ export interface SessionOptions<
  * Standalone consumers may use AgentLoop or LoopManager directly. Hosts that
  * need a room/session concept can use this component for one LoopManager,
  * foreground prompt routing, targeted extension lifecycle binding, reload
- * admission, stable collection ownership, and terminal shutdown.
+ * admission, and terminal shutdown.
  */
 export class Session<
   TLoop extends PromptableLoop<unknown>,
@@ -66,36 +64,23 @@ export class Session<
   readonly id: TSessionId;
 
   readonly #loopManager: LoopManager<TLoop, TConfig>;
-  readonly #extensionRegistry: TargetedLoopExtensionRegistry | undefined;
+  #extensionRegistry: TargetedLoopExtensionRegistry | undefined;
   readonly #onClose: ((session: Session<TLoop, TConfig, TSessionId>) => void) | undefined;
   #state: SessionState = "open";
   #closePromise: Promise<void> | undefined;
 
   constructor(options: SessionOptions<TLoop, TConfig, TSessionId>) {
     this.id = options.id;
-    const extensionRegistry = options.extensionRegistry;
-    this.#extensionRegistry = extensionRegistry;
     this.#loopManager = new LoopManager({ ...options.loopManager, sessionId: this.id });
-    if (extensionRegistry) {
-      this.#loopManager.on("before_loop_destroy", ({ loopId, reason }) => {
-        if (reason !== "creation_failed") {
-          extensionRegistry[targetedLoopExtensionSessionBinding]({
-            type: "remove_loop",
-            sessionId: this.id,
-            loopId,
-          });
-        }
-      });
-      extensionRegistry[targetedLoopExtensionSessionBinding]({
-        type: "attach",
-        sessionId: this.id,
-        loopManager: this.#loopManager,
-      });
-    }
     this.#onClose = options.onClose;
+    if (options.extensionRegistry) this.bindExtensionRegistry(options.extensionRegistry);
   }
 
   get state(): SessionState {
+    return this.#state;
+  }
+
+  getState(): SessionState {
     return this.#state;
   }
 
@@ -109,6 +94,10 @@ export class Session<
       && this.#loopManager.list().every(loop => !loop.isBusy);
   }
 
+  get isBusy(): boolean {
+    return !this.isIdle;
+  }
+
   get primary(): TLoop | undefined {
     return this.#loopManager.primary;
   }
@@ -117,7 +106,7 @@ export class Session<
     return this.#loopManager.selected;
   }
 
-  /** The explicitly selected loop used by prompt() when no loop ID is supplied. */
+  /** The explicitly selected loop preferred by prompt() when no loop ID is supplied. */
   get foreground(): TLoop | undefined {
     return this.#loopManager.selected;
   }
@@ -182,10 +171,10 @@ export class Session<
     try {
       this.#assertOpen("prompt an AgentLoop");
       const loop = options.loopId === undefined
-        ? this.foreground
+        ? this.foreground ?? this.primary
         : this.#requireLoop(options.loopId);
       if (!loop) {
-        throw new Error(`Cannot prompt session "${this.id}": no foreground AgentLoop is selected`);
+        throw new Error(`Cannot prompt session "${this.id}": no foreground or primary AgentLoop is available`);
       }
       return loop.prompt(message, options.images) as Promise<SessionPromptResult<TLoop>>;
     } catch (error) {
@@ -202,63 +191,57 @@ export class Session<
     }
   }
 
-  assertReloadable(loopId?: string): void {
-    this.#assertOpen("reload AgentLoops");
-    if (this.#loopManager.hasPendingOperations) {
-      throw new Error(`Cannot reload session "${this.id}" while AgentLoop creation or destruction is pending`);
+  protected bindExtensionRegistry(extensionRegistry: TargetedLoopExtensionRegistry): void {
+    this.#assertOpen("bind an extension registry");
+    if (this.#extensionRegistry !== undefined) {
+      throw new Error(`Session "${this.id}" already has an extension registry`);
     }
-    const loops = loopId === undefined ? this.#loopManager.list() : [this.#requireLoop(loopId)];
-    const busy = loops.find(loop => loop.isBusy);
-    if (busy) {
-      throw new Error(
-        `Cannot reload session "${this.id}" while loop "${busy.id}" is ${busy.activeLifecycleKind}`,
-      );
+    if (this.#loopManager.list().length > 0) {
+      throw new Error(`Cannot bind an extension registry after Session "${this.id}" has AgentLoops`);
     }
+    extensionRegistry.attachSession(this.id, this.#loopManager);
+    this.#extensionRegistry = extensionRegistry;
+    this.#loopManager.on("before_loop_destroy", ({ loopId, reason }) => {
+      if (reason !== "creation_failed") {
+        extensionRegistry.removeLoop(this.id, loopId);
+      }
+    });
   }
 
   reload(loopId?: string): Promise<void> {
     try {
-      return this.reloadAfter(Promise.resolve(), loopId);
+      this.#assertReloadable(loopId);
+      this.#state = "reloading";
     } catch (error) {
       return Promise.reject(error);
     }
-  }
 
-  reloadAfter(prerequisite: Promise<void>, loopId?: string): Promise<void> {
-    return this.runReload(
-      async () => {
-        const errors = await this.#loopManager.reload(loopId, prerequisite);
-        if (errors.length === 1) {
-          const error = errors[0]!;
-          throw new Error(`Failed to reload AgentLoop "${error.loopId}": ${error.message}`);
-        }
-        if (errors.length > 1) {
-          throw new AggregateError(
-            errors.map(error => new Error(`[${error.loopId}] ${error.message}`)),
-            `Failed to reload one or more AgentLoops for session "${this.id}"`,
-          );
-        }
-      },
-      loopId,
-    );
-  }
-
-  async runReload<T>(operation: () => Promise<T>, loopId?: string): Promise<T> {
-    this.assertReloadable(loopId);
-    const releaseCollection = this.#loopManager.reserveStableCollection();
-    this.#state = "reloading";
-    return this.#runReload(operation, releaseCollection);
+    return this.#runReload(async () => {
+      const errors = await this.#loopManager.reload(loopId);
+      if (errors.length === 1) {
+        const error = errors[0]!;
+        throw new Error(`Failed to reload AgentLoop "${error.loopId}": ${error.message}`);
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(
+          errors.map(error => new Error(`[${error.loopId}] ${error.message}`)),
+          `Failed to reload one or more AgentLoops for session "${this.id}"`,
+        );
+      }
+    });
   }
 
   close(): Promise<void> {
+    if (this.#closePromise !== undefined) return this.#closePromise;
+
     let destruction: Promise<void>;
     try {
+      this.#assertOpen("close");
       assertLoopManagerMutationAllowed(this.#loopManager, `close session "${this.id}"`);
       destruction = this.#loopManager.destroyAll();
     } catch (error) {
       return Promise.reject(error);
     }
-    if (this.#closePromise !== undefined) return this.#closePromise;
     this.#state = "closed";
 
     let resolveClose!: () => void;
@@ -269,13 +252,7 @@ export class Session<
     });
     this.#closePromise = closePromise;
 
-    let closeHookError: unknown;
-    try {
-      this.#onClose?.(this);
-    } catch (error) {
-      closeHookError = error;
-    }
-    void this.#closeRuntime(closeHookError, destruction).then(resolveClose, rejectClose);
+    void this.#closeRuntime(destruction).then(resolveClose, rejectClose);
     return closePromise;
   }
 
@@ -291,28 +268,41 @@ export class Session<
     return loop;
   }
 
-  async #runReload<T>(operation: () => Promise<T>, releaseCollection: () => void): Promise<T> {
+  #assertReloadable(loopId?: string): void {
+    this.#assertOpen("reload AgentLoops");
+    if (this.#loopManager.hasPendingOperations) {
+      throw new Error(`Cannot reload session "${this.id}" while AgentLoop creation or destruction is pending`);
+    }
+    const loops = loopId === undefined ? this.#loopManager.list() : [this.#requireLoop(loopId)];
+    const busy = loops.find(loop => loop.isBusy);
+    if (busy !== undefined) {
+      throw new Error(
+        `Cannot reload session "${this.id}" while loop "${busy.id}" is ${busy.activeLifecycleKind}`,
+      );
+    }
+  }
+
+  async #runReload<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
     } finally {
-      releaseCollection();
       if (this.#state === "reloading") this.#state = "open";
     }
   }
 
-  async #closeRuntime(closeHookError: unknown, destruction: Promise<void>): Promise<void> {
+  async #closeRuntime(destruction: Promise<void>): Promise<void> {
     const errors: unknown[] = [];
-    if (closeHookError !== undefined) errors.push(closeHookError);
     try {
       await destruction;
     } catch (error) {
       errors.push(error);
     } finally {
-      this.#extensionRegistry?.[targetedLoopExtensionSessionBinding]({
-        type: "detach",
-        sessionId: this.id,
-        loopManager: this.#loopManager,
-      });
+      this.#extensionRegistry?.detachSession(this.id, this.#loopManager);
+    }
+    try {
+      this.#onClose?.(this);
+    } catch (error) {
+      errors.push(error);
     }
 
     if (errors.length === 1) throw errors[0];
