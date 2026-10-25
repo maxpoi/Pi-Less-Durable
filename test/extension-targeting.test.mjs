@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
   ModelRuntime,
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
@@ -11,19 +13,27 @@ import {
 } from "../dist/index.js";
 
 const COMPACTION_EVENT = "session_before_compact";
+const CONFIG = {
+  compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  model: "gpt-5.6-sol",
+  provider: "openai-codex",
+  retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
+  thinkingLevel: "xhigh",
+};
 
 function registerCompactionObserver(pi) {
   pi.on(COMPACTION_EVENT, () => undefined);
 }
 
 test("consumer inline extensions cannot use framework-reserved names", async t => {
-  const configDir = mkdtempSync(join(tmpdir(), "pld-reserved-extension-name-"));
+  const workingDir = mkdtempSync(join(tmpdir(), "pld-reserved-extension-name-"));
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(configDir, "auth.json"),
-    modelsPath: join(configDir, "models.json"),
+    authPath: join(workingDir, "auth.json"),
+    modelsPath: join(workingDir, "models.json"),
   });
   const harness = new MultiAgentPiHarness({
-    configDir,
+    config: CONFIG,
+    workingDir,
     modelRuntime,
     logger: { info() {}, warning() {} },
   });
@@ -31,7 +41,7 @@ test("consumer inline extensions cannot use framework-reserved names", async t =
     try {
       await harness.close();
     } finally {
-      rmSync(configDir, { recursive: true, force: true });
+      rmSync(workingDir, { recursive: true, force: true });
     }
   });
 
@@ -54,8 +64,8 @@ test("consumer inline extensions cannot use framework-reserved names", async t =
 });
 
 test("failed extension sources discard their local targeted registrations", async t => {
-  const configDir = mkdtempSync(join(tmpdir(), "pld-targeted-transaction-"));
-  const failedFileExtension = join(configDir, "failed-targeted-source.mjs");
+  const workingDir = mkdtempSync(join(tmpdir(), "pld-targeted-transaction-"));
+  const failedFileExtension = join(workingDir, "failed-targeted-source.mjs");
   writeFileSync(
     failedFileExtension,
     `import { multiAgentPi } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};\n`
@@ -68,8 +78,8 @@ test("failed extension sources discard their local targeted registrations", asyn
   );
   const warnings = [];
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(configDir, "auth.json"),
-    modelsPath: join(configDir, "models.json"),
+    authPath: join(workingDir, "auth.json"),
+    modelsPath: join(workingDir, "models.json"),
   });
   const extensionSources = {
     extensionFiles: [failedFileExtension],
@@ -98,7 +108,8 @@ test("failed extension sources discard their local targeted registrations", asyn
     ],
   };
   const harness = new MultiAgentPiHarness({
-    configDir,
+    config: CONFIG,
+    workingDir,
     modelRuntime,
     logger: {
       info() {},
@@ -111,7 +122,7 @@ test("failed extension sources discard their local targeted registrations", asyn
     try {
       await harness.close();
     } finally {
-      rmSync(configDir, { recursive: true, force: true });
+      rmSync(workingDir, { recursive: true, force: true });
     }
   });
 
@@ -155,11 +166,11 @@ test("failed extension sources discard their local targeted registrations", asyn
 });
 
 test("targeted setup failure discards its native source with an exact diagnostic", async t => {
-  const configDir = mkdtempSync(join(tmpdir(), "pld-targeted-setup-failure-"));
+  const workingDir = mkdtempSync(join(tmpdir(), "pld-targeted-setup-failure-"));
   const warnings = [];
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(configDir, "auth.json"),
-    modelsPath: join(configDir, "models.json"),
+    authPath: join(workingDir, "auth.json"),
+    modelsPath: join(workingDir, "models.json"),
   });
   const extensionSources = {
     inlineExtensions: [{
@@ -181,7 +192,8 @@ test("targeted setup failure discards its native source with an exact diagnostic
     }],
   };
   const harness = new MultiAgentPiHarness({
-    configDir,
+    config: CONFIG,
+    workingDir,
     modelRuntime,
     logger: {
       info() {},
@@ -194,7 +206,7 @@ test("targeted setup failure discards its native source with an exact diagnostic
     try {
       await harness.close();
     } finally {
-      rmSync(configDir, { recursive: true, force: true });
+      rmSync(workingDir, { recursive: true, force: true });
     }
   });
 

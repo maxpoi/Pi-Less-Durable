@@ -1,6 +1,9 @@
-import type { MultiAgentPiCompactionSettings } from "../config/config-types.js";
+import {
+  DEFAULT_MULTI_AGENT_PI_COMPACTION_RESERVE_TOKENS,
+  type MultiAgentPiCompactionSettings,
+} from "../config/config-types.js";
 
-export const DEFAULT_MULTI_AGENT_PI_COMPACTION_RESERVE_TOKENS = 16_384;
+export { DEFAULT_MULTI_AGENT_PI_COMPACTION_RESERVE_TOKENS };
 
 const AUTO_COMPACT_CEILING = 400_000;
 
