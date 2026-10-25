@@ -81,10 +81,6 @@ function assertCompactionStripRunsFirst(result, expectedConsumerPaths) {
   }
 }
 
-function frameworkExtensionPath(roomId, agentId) {
-  return `<inline:multi-agent-pi-framework-${roomId}-${agentId}>`;
-}
-
 test("compaction strip runs first in every factory-created loop on initialization and reload", async t => {
   const configDir = mkdtempSync(join(tmpdir(), "pld-compaction-order-"));
   const extensionFile = new URL("./fixtures/compaction-order-extension.mjs", import.meta.url);
@@ -96,8 +92,9 @@ test("compaction strip runs first in every factory-created loop on initializatio
     name: "test-inline-compaction-observer",
     factory(pi) {
       registerCompactionObserver(pi);
-      multiAgentPi.register({
-        target: "all",
+      return multiAgentPi.register(pi, {
+        id: "worker-compaction-observer",
+        target: { tag: "worker" },
         setup: registerCompactionObserver,
       });
     },
@@ -106,11 +103,13 @@ test("compaction strip runs first in every factory-created loop on initializatio
     name: "test-custom-compaction-observer",
     factory: registerCompactionObserver,
   };
+  const extensionSources = {
+    extensionFiles: [fileURLToPath(extensionFile)],
+    inlineExtensions: [inlineExtension, customExtension],
+  };
   const harness = new MultiAgentPiHarness({
     configDir,
     modelRuntime,
-    extensionFiles: [fileURLToPath(extensionFile)],
-    inlineExtensions: [inlineExtension],
     logger: { info() {}, warning() {} },
   });
   t.after(async () => {
@@ -126,46 +125,37 @@ test("compaction strip runs first in every factory-created loop on initializatio
   const main = await harness.createAgentLoop(
     room,
     { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-    {},
-    [customExtension],
+    { cwd: process.cwd() },
+    extensionSources,
   );
   room.register(main);
   const child = await harness.createAgentLoop(
     room,
     { id: "child", name: "Child", tag: "worker" },
-    {},
-    [customExtension],
+    { cwd: process.cwd() },
+    extensionSources,
   );
   room.register(child);
 
-  const mainConsumers = new Map([
+  const consumers = new Map([
     [fileURLToPath(extensionFile), "extension-file"],
     [INLINE_EXTENSION_PATH, "Harness inline-extension"],
     [CUSTOM_EXTENSION_PATH, "custom AgentLoop extension"],
-    [frameworkExtensionPath(room.id, main.id), "multiAgentPi.register()"],
-  ]);
-  const childConsumers = new Map([
-    [CUSTOM_EXTENSION_PATH, "custom child AgentLoop extension"],
-    [frameworkExtensionPath(room.id, child.id), "child multiAgentPi.register()"],
   ]);
 
-  assertCompactionStripRunsFirst(
-    await captureCompactionInvocationOrder(main),
-    mainConsumers,
-  );
-  assertCompactionStripRunsFirst(
-    await captureCompactionInvocationOrder(child),
-    childConsumers,
-  );
+  const initialMain = await captureCompactionInvocationOrder(main);
+  const initialChild = await captureCompactionInvocationOrder(child);
+  assertCompactionStripRunsFirst(initialMain, consumers);
+  assertCompactionStripRunsFirst(initialChild, consumers);
+  assert.equal(initialMain.invocationOrder.filter(path => path === INLINE_EXTENSION_PATH).length, 1);
+  assert.equal(initialChild.invocationOrder.filter(path => path === INLINE_EXTENSION_PATH).length, 2);
 
   await harness.reload({ roomId: room.id });
 
-  assertCompactionStripRunsFirst(
-    await captureCompactionInvocationOrder(main),
-    mainConsumers,
-  );
-  assertCompactionStripRunsFirst(
-    await captureCompactionInvocationOrder(child),
-    childConsumers,
-  );
+  const reloadedMain = await captureCompactionInvocationOrder(main);
+  const reloadedChild = await captureCompactionInvocationOrder(child);
+  assertCompactionStripRunsFirst(reloadedMain, consumers);
+  assertCompactionStripRunsFirst(reloadedChild, consumers);
+  assert.equal(reloadedMain.invocationOrder.filter(path => path === INLINE_EXTENSION_PATH).length, 1);
+  assert.equal(reloadedChild.invocationOrder.filter(path => path === INLINE_EXTENSION_PATH).length, 2);
 });

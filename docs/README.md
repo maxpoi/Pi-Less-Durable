@@ -52,6 +52,7 @@ When changing documentation:
 4. Prefer replacing stale text over appending another exception or chronology.
 5. Keep diagrams conceptual and stable; avoid function-by-function traces.
 6. Keep each fact in one topic document and link to it rather than duplicating it.
-7. End topic documents with a small **Source entry points** section.
+7. Describe the current contract positively from a consumer's perspective; do not explain it through removed or unpublished historical concepts.
+8. End topic documents with a small **Source entry points** section.
 
 When changing source, documentation does not need an update unless one of the high-level concerns above changed.
