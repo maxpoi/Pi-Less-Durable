@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
   ModelRuntime,
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
@@ -15,6 +17,13 @@ const COMPACTION_EVENT = "session_before_compact";
 const COMPACTION_STRIP_PATH = "<inline:multi-agent-pi-compaction-strip>";
 const INLINE_EXTENSION_PATH = "<inline:test-inline-compaction-observer>";
 const CUSTOM_EXTENSION_PATH = "<inline:test-custom-compaction-observer>";
+const CONFIG = {
+  compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  model: "gpt-5.6-sol",
+  provider: "openai-codex",
+  retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
+  thinkingLevel: "xhigh",
+};
 
 function registerCompactionObserver(pi) {
   pi.on(COMPACTION_EVENT, () => undefined);
@@ -82,11 +91,11 @@ function assertCompactionStripRunsFirst(result, expectedConsumerPaths) {
 }
 
 test("compaction strip runs first in every factory-created loop on initialization and reload", async t => {
-  const configDir = mkdtempSync(join(tmpdir(), "pld-compaction-order-"));
+  const workingDir = mkdtempSync(join(tmpdir(), "pld-compaction-order-"));
   const extensionFile = new URL("./fixtures/compaction-order-extension.mjs", import.meta.url);
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(configDir, "auth.json"),
-    modelsPath: join(configDir, "models.json"),
+    authPath: join(workingDir, "auth.json"),
+    modelsPath: join(workingDir, "models.json"),
   });
   const inlineExtension = {
     name: "test-inline-compaction-observer",
@@ -108,7 +117,8 @@ test("compaction strip runs first in every factory-created loop on initializatio
     inlineExtensions: [inlineExtension, customExtension],
   };
   const harness = new MultiAgentPiHarness({
-    configDir,
+    config: CONFIG,
+    workingDir,
     modelRuntime,
     logger: { info() {}, warning() {} },
   });
@@ -116,7 +126,7 @@ test("compaction strip runs first in every factory-created loop on initializatio
     try {
       await harness.close();
     } finally {
-      rmSync(configDir, { recursive: true, force: true });
+      rmSync(workingDir, { recursive: true, force: true });
     }
   });
 

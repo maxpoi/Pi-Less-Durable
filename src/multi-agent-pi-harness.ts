@@ -9,11 +9,13 @@ import {
 import { defaultAgentLogger } from "./logger/logger.js";
 import type { AgentLogger } from "./logger/logger.js";
 import { MultiAgentPiCompactionPolicy } from "./compaction/compaction-policy.js";
-import { resolveMultiAgentPiHarnessConfigDirectory, type MultiAgentPiHarnessConfigError } from "./config/config-path.js";
-import { MultiAgentPiConfigStore } from "./config/config-store.js";
 import type { MultiAgentPiConfig } from "./config/config-types.js";
 import { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
-import { discoverConfigExtensionFiles } from "./extensions/utils.js";
+import {
+  discoverExtensionFiles,
+  resolveMultiAgentPiExtensionsDirectory,
+  resolveMultiAgentPiWorkingDirectory,
+} from "./runtime-path.js";
 import {
   PRIMARY_AGENT_TAG,
   assertAgentIdentity,
@@ -29,7 +31,12 @@ import {
 export type MultiAgentPiHarnessState = "created" | "opening" | "open" | "reloading" | "closing" | "closed";
 
 export interface MultiAgentPiHarnessOptions {
-  readonly configDir?: string;
+  /** Complete in-memory configuration. The host owns any persistence. */
+  readonly config: MultiAgentPiConfig;
+  /** Framework persistence and native Pi resource root. Defaults to ~/.multiagentpi. */
+  readonly workingDir?: string;
+  /** Extension catalog root. Defaults to <workingDir>/extensions. */
+  readonly extensionsDir?: string;
   /** Host-owned model/provider/auth runtime. MultiAgentPiHarness borrows but never closes it. */
   readonly modelRuntime: ModelRuntime;
   /** Optional diagnostic sink shared by every admitted Room. */
@@ -39,14 +46,16 @@ export interface MultiAgentPiHarnessOptions {
 export interface ReloadMultiAgentPiHarnessOptions {
   readonly roomId?: RoomId;
   readonly agentId?: string;
+  /** Host-supplied replacement for the shared in-memory configuration. */
+  readonly config?: MultiAgentPiConfig;
 }
 
 export class MultiAgentPiHarness {
-  readonly #configStore: MultiAgentPiConfigStore;
+  readonly #workingDir: string;
+  readonly #extensionsDir: string;
   readonly #modelRuntime: ModelRuntime;
   readonly #logger: AgentLogger;
-  #configDiagnostics: readonly MultiAgentPiHarnessConfigError[] = [];
-  #configExtensionFiles: readonly string[] = [];
+  #extensionFiles: readonly string[] = [];
   readonly #settingsManager: MultiAgentPiSettingsManager;
   readonly #rooms = new Map<RoomId, Room>();
   #state: MultiAgentPiHarnessState = "created";
@@ -54,11 +63,14 @@ export class MultiAgentPiHarness {
   #closePromise: Promise<void> | undefined;
 
   constructor(options: MultiAgentPiHarnessOptions) {
-    const configDir = resolveMultiAgentPiHarnessConfigDirectory(options.configDir);
-    this.#configStore = new MultiAgentPiConfigStore(configDir);
+    this.#workingDir = resolveMultiAgentPiWorkingDirectory(options.workingDir);
+    this.#extensionsDir = resolveMultiAgentPiExtensionsDirectory(
+      options.extensionsDir,
+      this.#workingDir,
+    );
     this.#modelRuntime = options.modelRuntime;
     this.#settingsManager = new MultiAgentPiSettingsManager(
-      this.#configStore,
+      options.config,
       new MultiAgentPiCompactionPolicy(
         modelRef => this.#modelRuntime.getModel(modelRef.provider, modelRef.id),
       ),
@@ -66,23 +78,20 @@ export class MultiAgentPiHarness {
     this.#logger = options.logger ?? defaultAgentLogger;
   }
 
-  get configDir(): string {
-    return this.#configStore.configDir;
+  get workingDir(): string {
+    return this.#workingDir;
+  }
+
+  get extensionsDir(): string {
+    return this.#extensionsDir;
   }
 
   get state(): MultiAgentPiHarnessState {
     return this.#state;
   }
 
-  get configDiagnostics(): readonly MultiAgentPiHarnessConfigError[] {
-    return this.#configDiagnostics;
-  }
-
   get config(): Readonly<MultiAgentPiConfig> {
-    if (this.#state !== "open") {
-      throw new Error(`MultiAgentPiHarness config is unavailable while it is ${this.#state}`);
-    }
-    return this.#configStore.loadConfig();
+    return this.#settingsManager.getConfig();
   }
 
   get settings(): MultiAgentPiSettingsManager {
@@ -127,6 +136,9 @@ export class MultiAgentPiHarness {
     if (options.agentId !== undefined && options.roomId === undefined) {
       return Promise.reject(new Error("Targeted agent reload requires a roomId"));
     }
+    if (options.config !== undefined && options.roomId !== undefined) {
+      return Promise.reject(new Error("Replacing configuration requires a full Harness reload"));
+    }
     const rooms = [...this.#rooms.values()];
     let targetedRoom: Room | undefined;
     try {
@@ -138,16 +150,12 @@ export class MultiAgentPiHarness {
       if (busyRoom !== undefined) {
         throw new Error(`Cannot reload MultiAgentPiHarness while Room "${busyRoom.id}" is busy`);
       }
-      if (targetedRoom === undefined) {
-        const configuration = this.#configStore.initialize();
-        this.#configDiagnostics = configuration.diagnostics;
-      }
     } catch (error) {
       return Promise.reject(error);
     }
 
     this.#state = "reloading";
-    return this.#reloadRuntime(rooms, targetedRoom, options.agentId);
+    return this.#reloadRuntime(rooms, targetedRoom, options.agentId, options.config);
   }
 
   /** Create one AgentLoop around a native Pi AgentSession without registering it in the Room. */
@@ -183,7 +191,7 @@ export class MultiAgentPiHarness {
       cwd: resolve(config.cwd),
     };
     const extensionFiles = [...new Set([
-      ...this.#configExtensionFiles,
+      ...this.#extensionFiles,
       ...(extensionSources.extensionFiles ?? []).map(extensionPath =>
         resolve(process.cwd(), extensionPath)
       ),
@@ -196,7 +204,7 @@ export class MultiAgentPiHarness {
         extensionFiles,
         inlineExtensions: [...(extensionSources.inlineExtensions ?? [])],
       },
-      configDir: this.configDir,
+      workingDir: this.workingDir,
       modelRuntime: this.#modelRuntime,
       settingsManager: this.#settingsManager,
       logger: this.#logger,
@@ -211,7 +219,7 @@ export class MultiAgentPiHarness {
     }
 
     const runtime = {
-      configDir: this.configDir,
+      workingDir: this.workingDir,
       onClosed: (closedRoom: Room) => {
         if (this.#rooms.get(closedRoom.id) === closedRoom) {
           this.#rooms.delete(closedRoom.id);
@@ -262,6 +270,7 @@ export class MultiAgentPiHarness {
     rooms: readonly Room[],
     targetedRoom: Room | undefined,
     agentId: string | undefined,
+    config: MultiAgentPiConfig | undefined,
   ): Promise<void> {
     try {
       if (targetedRoom !== undefined) {
@@ -269,7 +278,7 @@ export class MultiAgentPiHarness {
         return;
       }
 
-      await this.#settingsManager.reload();
+      if (config !== undefined) this.#settingsManager.replaceConfig(config);
       const errors: unknown[] = [];
       for (const room of rooms) {
         try {
@@ -289,10 +298,7 @@ export class MultiAgentPiHarness {
 
   async #openRuntime(): Promise<void> {
     try {
-      const configuration = this.#configStore.initialize();
-      this.#configDiagnostics = configuration.diagnostics;
-      await this.#settingsManager.reload();
-      this.#configExtensionFiles = discoverConfigExtensionFiles(this.configDir);
+      this.#extensionFiles = discoverExtensionFiles(this.extensionsDir);
       if (this.#state === "opening") {
         this.#state = "open";
       }

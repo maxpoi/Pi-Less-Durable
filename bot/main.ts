@@ -5,25 +5,37 @@ import {
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
 } from "pi-less-durable";
+import { BotConfigStore } from "./config-store.js";
 import { logger } from "./logger.js";
 
 async function runBot(): Promise<void> {
-  const agentDir = join(homedir(), ".multiagentpi");
-  const configDir = join(agentDir, "config");
-  const authPath = join(agentDir, "auth.json");
+  const workingDir = join(homedir(), ".multiagentpi");
+  const configStore = new BotConfigStore(workingDir);
+  const loadedConfig = configStore.initialize();
+  const { limitedMode, ...harnessConfig } = loadedConfig.config;
+  for (const diagnostic of loadedConfig.diagnostics) {
+    logger.warning("Config persistence warning", diagnostic.message);
+  }
+
+  const authPath = join(workingDir, "auth.json");
   const modelRuntime = await ModelRuntime.create({
     authPath,
-    modelsPath: join(agentDir, "models.json"),
+    modelsPath: join(workingDir, "models.json"),
   });
-  const harness = new MultiAgentPiHarness({ configDir, modelRuntime, logger });
+  const harness = new MultiAgentPiHarness({
+    config: harnessConfig,
+    workingDir,
+    modelRuntime,
+    logger,
+  });
 
   await harness.open();
   try {
     const provider = harness.settings.getDefaultProvider();
     const modelId = harness.settings.getDefaultModel();
-    const model = provider && modelId ? modelRuntime.getModel(provider, modelId) : undefined;
+    const model = modelRuntime.getModel(provider, modelId);
     if (!model) {
-      logger.warning("Model required", `Configure a model in ${join(configDir, "config.json")}.`);
+      logger.warning("Model required", `Configure a model in ${loadedConfig.path}.`);
       return;
     }
 
@@ -48,7 +60,14 @@ async function runBot(): Promise<void> {
 
     await room.prompt("Hello");
   } finally {
-    await harness.close();
+    try {
+      await harness.close();
+    } finally {
+      configStore.save({
+        ...harness.config,
+        limitedMode,
+      });
+    }
   }
 }
 

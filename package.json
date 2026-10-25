@@ -13,7 +13,6 @@
     }
   },
   "files": [
-    "config/config.default.json",
     "dist"
   ],
   "scripts": {

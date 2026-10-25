@@ -26,12 +26,12 @@ export { PRIMARY_AGENT_TAG };
 /** Consumer-owned identity and persistence options for a Harness-created Room. */
 export interface CreateRoomOptions {
   readonly id?: string;
-  /** Room agent-data directory. Harness config provides the default after admission. */
+  /** Room agent-data directory. Harness workingDir provides the default. */
   readonly roomDir?: string;
 }
 
 interface RoomRuntime {
-  readonly configDir: string;
+  readonly workingDir: string;
   readonly onClosed: (room: Room) => void;
 }
 
@@ -56,7 +56,7 @@ export class Room {
   ) {
     this.id = id;
     this.#resolvedRoomDir = construction.roomDir === undefined
-      ? resolve(runtime.configDir, "rooms", construction.defaultRoomDirectoryName)
+      ? resolve(runtime.workingDir, "rooms", construction.defaultRoomDirectoryName)
       : resolve(construction.roomDir);
     this.#runtime = runtime;
   }

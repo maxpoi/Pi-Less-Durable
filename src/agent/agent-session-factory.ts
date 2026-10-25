@@ -62,7 +62,7 @@ export interface CreateHarnessAgentSessionOptions {
   readonly agent: AgentIdentity;
   readonly config: AgentConfig;
   readonly extensionSources: AgentLoopExtensionSources;
-  readonly configDir: string;
+  readonly workingDir: string;
   readonly modelRuntime: ModelRuntime;
   readonly settingsManager: MultiAgentPiSettingsManager;
   readonly logger: AgentLogger;
@@ -217,7 +217,7 @@ export async function createHarnessAgentSession(
     agent,
     config,
     extensionSources,
-    configDir,
+    workingDir,
     modelRuntime,
     settingsManager,
     logger,
@@ -266,7 +266,7 @@ export async function createHarnessAgentSession(
   const resourceLoader = new MultiAgentPiResourceLoader(
     {
       cwd,
-      agentDir: configDir,
+      agentDir: workingDir,
       settingsManager: settingsManager as unknown as SettingsManager,
       additionalExtensionPaths: [...extensionFiles],
       extensionFactories: [
