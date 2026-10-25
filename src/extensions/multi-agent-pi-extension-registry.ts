@@ -3,97 +3,43 @@ import {
   DefaultResourceLoader,
   type ExtensionAPI,
   type ExtensionFactory,
-  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentLogger } from "../logger/logger.js";
 import { assertAgentId } from "../room/loop-manager.js";
 import type { RoomId } from "../room/room-types.js";
 
 export type MultiAgentPiExtensionTarget =
-  | "all"
   | { readonly tag: string }
   | { readonly id: string; readonly roomId?: string };
 
 export interface MultiAgentPiExtensionRegistration {
+  /** Diagnostic label reported when targeted setup fails. */
+  readonly id: string;
   readonly target: MultiAgentPiExtensionTarget;
   readonly setup: ExtensionFactory;
 }
 
 export interface MultiAgentPiExtensionAPI {
-  /** Register native Pi behavior for this Room's agents. */
-  register(registration: MultiAgentPiExtensionRegistration): void;
-}
-
-interface AgentExtensionContext {
-  readonly roomId: RoomId;
-  readonly id: string;
-  readonly tag: string;
-}
-
-interface StoredRegistration {
-  readonly target: MultiAgentPiExtensionTarget;
-  readonly setup: ExtensionFactory;
-}
-
-interface MultiAgentPiExtensionLoadContext {
-  readonly registry: MultiAgentPiExtensionRegistry;
-  readonly roomId: RoomId;
-  readonly isPrimary: boolean;
-}
-
-const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiExtensionLoadContext>();
-
-/** Harness-owned Room declarations materialized by matching native AgentSessions. */
-export class MultiAgentPiExtensionRegistry {
-  readonly #roomRegistrations = new Map<RoomId, StoredRegistration[]>();
-
+  /**
+   * Apply native Pi behavior when the AgentSession currently loading this source matches `target`.
+   * Await or return async setup when it must participate in the source's initial load transaction.
+   */
   register(
-    sourceRoomId: RoomId,
+    pi: ExtensionAPI,
     registration: MultiAgentPiExtensionRegistration,
-  ): void {
-    assertRegistration(registration);
-    const target = normalizeTarget(registration.target, sourceRoomId);
-    if (typeof target === "object" && "id" in target && target.roomId !== sourceRoomId) {
-      throw new Error(
-        `Room extension source "${sourceRoomId}" cannot target agent "${target.id}" in Room "${target.roomId}"`,
-      );
-    }
-    const registrations = this.#roomRegistrations.get(sourceRoomId) ?? [];
-    registrations.push({ target, setup: registration.setup });
-    this.#roomRegistrations.set(sourceRoomId, registrations);
-  }
-
-  clearRoomRegistrations(roomId: RoomId): void {
-    this.#roomRegistrations.delete(roomId);
-  }
-
-  createAgentExtension(
-    context: AgentExtensionContext,
-    name = `multi-agent-pi-${context.roomId}-${context.id}`,
-  ): InlineExtension {
-    return {
-      name,
-      hidden: true,
-      factory: async (pi: ExtensionAPI) => {
-        const registrations = [...(this.#roomRegistrations.get(context.roomId) ?? [])];
-        for (const registration of registrations) {
-          if (matches(registration.target, context)) {
-            await registration.setup(pi);
-          }
-        }
-      },
-    };
-  }
+  ): Promise<void>;
 }
 
 export interface MultiAgentPiResourceLoaderContext {
-  readonly registry: MultiAgentPiExtensionRegistry;
   readonly roomId: RoomId;
-  readonly isPrimary: boolean;
+  readonly id: string;
+  readonly tag: string;
   readonly logger: AgentLogger;
 }
 
-/** Pi ResourceLoader whose main runtime owns one Room's extension declarations. */
+const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiResourceLoaderContext>();
+
+/** Pi ResourceLoader that scopes native extension loading to one AgentLoop identity. */
 export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   readonly #context: MultiAgentPiResourceLoaderContext;
 
@@ -108,25 +54,30 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   override async reload(
     options?: Parameters<DefaultResourceLoader["reload"]>[0],
   ): Promise<void> {
-    const { registry, roomId, isPrimary, logger } = this.#context;
-    if (isPrimary) registry.clearRoomRegistrations(roomId);
-    try {
-      await extensionLoadContext.run(
-        { registry, roomId, isPrimary },
-        () => super.reload(options),
-      );
-      const loadedExtensions = this.getExtensions();
-      for (const error of loadedExtensions.errors) {
-        logger.warning("Pi extension error", `${error.path}: ${error.error}`);
-      }
-      for (const warning of loadedExtensions.warnings ?? []) {
-        logger.warning("Pi extension warning", `${warning.path}: ${warning.warning}`);
-      }
-    } catch (error) {
-      if (isPrimary) registry.clearRoomRegistrations(roomId);
-      throw error;
+    const { logger } = this.#context;
+    await extensionLoadContext.run(this.#context, () => super.reload(options));
+
+    const loadedExtensions = this.getExtensions();
+    for (const error of loadedExtensions.errors) {
+      logger.warning("Pi extension error", `${error.path}: ${error.error}`);
+    }
+    for (const warning of loadedExtensions.warnings ?? []) {
+      logger.warning("Pi extension warning", `${warning.path}: ${warning.warning}`);
     }
   }
+}
+
+function requireAgentContext(pi: ExtensionAPI): MultiAgentPiResourceLoaderContext {
+  if (!pi || typeof pi !== "object" || typeof pi.on !== "function") {
+    throw new Error("multiAgentPi.register() requires the current Pi ExtensionAPI");
+  }
+  const context = extensionLoadContext.getStore();
+  if (!context) {
+    throw new Error(
+      "multiAgentPi.register() requires a MultiAgentPi AgentLoop extension context",
+    );
+  }
+  return context;
 }
 
 function assertRegistration(
@@ -135,21 +86,21 @@ function assertRegistration(
   if (!registration || typeof registration !== "object") {
     throw new Error("MultiAgentPi extension registration requires a registration object");
   }
-  if (typeof registration.setup !== "function") {
-    throw new Error("MultiAgentPi extension registration requires a Pi extension setup function");
+  if (typeof registration.id !== "string" || !registration.id.trim()) {
+    throw new Error("MultiAgentPi extension registration requires a non-empty id");
   }
-  if (registration.target !== "all" && (!registration.target || typeof registration.target !== "object")) {
+  if (typeof registration.setup !== "function") {
     throw new Error(
-      "MultiAgentPi extension registration requires target \"all\", { tag }, { id }, or { roomId, id }",
+      `MultiAgentPi extension "${registration.id}" requires a Pi extension setup function`,
     );
   }
-}
+  if (!registration.target || typeof registration.target !== "object") {
+    throw new Error(
+      `MultiAgentPi extension "${registration.id}" requires target { tag }, { id }, or { roomId, id }`,
+    );
+  }
 
-function normalizeTarget(
-  target: MultiAgentPiExtensionTarget,
-  sourceRoomId: RoomId,
-): MultiAgentPiExtensionTarget {
-  if (target === "all") return target;
+  const target = registration.target;
   const hasTag = "tag" in target;
   const hasId = "id" in target;
   const hasRoomId = "roomId" in target;
@@ -157,38 +108,53 @@ function normalizeTarget(
     if (hasId || hasRoomId || typeof target.tag !== "string" || !target.tag.trim()) {
       throw new Error("MultiAgentPi extension tag target requires only one non-empty tag");
     }
-    return { tag: target.tag.trim() };
+    return;
   }
-  if (!hasId) {
-    throw new Error("MultiAgentPi exact target requires an id");
-  }
+  if (!hasId) throw new Error("MultiAgentPi exact target requires an id");
+  assertAgentId(target.id);
   if (hasRoomId && (typeof target.roomId !== "string" || !target.roomId.trim())) {
     throw new Error("MultiAgentPi exact target Room id must not be empty");
   }
-  assertAgentId(target.id);
-  return {
-    roomId: hasRoomId ? target.roomId!.trim() : sourceRoomId,
-    id: target.id,
-  };
 }
 
 function matches(
   target: MultiAgentPiExtensionTarget,
-  context: AgentExtensionContext,
+  context: MultiAgentPiResourceLoaderContext,
 ): boolean {
-  if (target === "all") return true;
-  if ("tag" in target) return target.tag === context.tag;
-  return target.roomId === context.roomId && target.id === context.id;
+  if ("tag" in target) return target.tag.trim() === context.tag;
+  if (target.id !== context.id) return false;
+  return target.roomId === undefined || target.roomId.trim() === context.roomId;
 }
 
-function register(registration: MultiAgentPiExtensionRegistration): void {
-  const context = extensionLoadContext.getStore();
-  if (!context) {
-    throw new Error("multiAgentPi.register() requires a Harness AgentSession extension context");
+function createTargetedSetupError(
+  registrationId: string,
+  context: MultiAgentPiResourceLoaderContext,
+  error: unknown,
+): Error {
+  const details = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `Targeted extension "${registrationId}" failed for Room "${context.roomId}", `
+      + `AgentLoop "${context.id}": ${details}`,
+    { cause: error },
+  );
+}
+
+function register(
+  pi: ExtensionAPI,
+  registration: MultiAgentPiExtensionRegistration,
+): Promise<void> {
+  assertRegistration(registration);
+  const context = requireAgentContext(pi);
+  if (!matches(registration.target, context)) return Promise.resolve();
+
+  try {
+    return Promise.resolve(registration.setup(pi)).catch(error => {
+      throw createTargetedSetupError(registration.id.trim(), context, error);
+    });
+  } catch (error) {
+    throw createTargetedSetupError(registration.id.trim(), context, error);
   }
-  if (!context.isPrimary) return;
-  context.registry.register(context.roomId, registration);
 }
 
-/** Extension-source API backed by the Room main currently loading that source. */
+/** Targeted native Pi behavior evaluated independently in every AgentSession. */
 export const multiAgentPi: MultiAgentPiExtensionAPI = Object.freeze({ register });

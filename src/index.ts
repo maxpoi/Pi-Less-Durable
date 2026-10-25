@@ -32,7 +32,10 @@ export {
   type AgentLoopLifecycleKind,
   type AgentLoopState,
 } from "./agent/agent-loop.js";
-export type { AgentConfig } from "./agent/agent-session-factory.js";
+export type {
+  AgentConfig,
+  AgentLoopExtensionSources,
+} from "./agent/agent-session-factory.js";
 export {
   forkBranchEntries,
   forkConversationHistory,
@@ -67,17 +70,6 @@ export type {
   ThinkingLevel,
 } from "./config/config-types.js";
 export { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
-export {
-  executionEnvContext,
-  getCurrentAgentExecution,
-  requireCurrentAgentExecutionEnv,
-  resolveCurrentAgentExecutionEnv,
-  type AgentExecutionContext,
-  type ExecutionEnv,
-  type ExecutionEnvFactory,
-  type ExecutionEnvTarget,
-  type ExecutionEnvUse,
-} from "./execution-environment.js";
 export {
   multiAgentPi,
   type MultiAgentPiExtensionAPI,

@@ -1,29 +1,61 @@
 # Extension Architecture
 
-## Purpose of `extensionsOverride`
+## Native Pi extensions
 
-Pi-Less-Durable uses `extensionsOverride` to place its built-in extensions in a deterministic runtime order relative to the otherwise opaque consumer-extension block.
-
-Consumer extensions remain opaque to the framework. Their existing relative order is retained when Pi-Less-Durable places the consumer block between framework-owned boundaries. Inline extension names beginning with `multi-agent-pi-` are reserved for framework-owned extensions.
-
-## Targeted declarations
-
-Extension sources declare behavior for matching Room agents through the current Pi API:
+Harness discovers native Pi extension sources from direct `<configDir>/extensions/<name>/index.ts` children when it opens. The default config root is `~/.multiagentpi/config`. Use direct native Pi registration for behavior shared by every loop receiving the source:
 
 ```ts
-multiAgentPi.register(pi, {
-  id: "my-feature",
-  target: "all",
-  setup,
-});
+export default function extension(pi: ExtensionAPI) {
+  pi.on("tool_call", handler);
+  pi.registerTool(tool);
+}
 ```
 
-The declaration is backed by `pi.events.on()`, so Pi discards it when its source factory throws or rejects. Matching declarations materialize as one framework extension; targeted setup is all-or-nothing for that AgentLoop, with the failing registration ID in Pi's extension diagnostic.
+Pass additional sources to each `createAgentLoop()` call that should receive them. Each loop gets independent native extension registrations and runtime state.
 
+## Targeted behavior
+
+Use `multiAgentPi.register()` when part of a source should apply only to matching agent IDs or tags:
+
+```ts
+export default async function extension(pi: ExtensionAPI) {
+  pi.on("tool_call", commonHandler);
+
+  await multiAgentPi.register(pi, {
+    id: "worker-guard",
+    target: { tag: "worker" },
+    setup(targetPi) {
+      targetPi.on("tool_call", workerHandler);
+    },
+  });
+}
+```
+
+Direct Pi registration is the shared-behavior path. `{ id }` matches that Room-local ID independently in every Room, while `{ roomId, id }` identifies one exact Room agent. Async targeted setup must be awaited or returned by the source factory.
+
+Target matching happens during each AgentSession's native Pi load transaction. A matching setup failure discards that complete source extension for that loop, while other loops load independently.
+
+## Extension order
+
+`extensionsOverride` preserves consumer relative order while placing framework behavior around the consumer block:
+
+```text
+codemode
+→ compaction strip
+→ consumer extensions
+→ Codex server compaction
+```
+
+Inline extension names beginning with `multi-agent-pi-` are reserved for framework-owned extensions.
+
+## Reload scope
+
+`harness.reload()` reloads every Room. `harness.reload({ roomId })` reloads one Room, and adding `agentId` reloads one AgentLoop. Room reload keeps primary-before-child ordering. The config extension catalog is captured when Harness opens.
 
 ## Source entry points
 
-- AgentSession assembly and `extensionsOverride`: `src/agent/agent-session-factory.ts`
+- AgentSession assembly and extension ordering: `src/agent/agent-session-factory.ts`
+- Config extension discovery: `src/extensions/utils.ts`
 - Framework-owned inline extensions: `src/extensions/built-in-extensions.ts`
-- Room-scoped extension materialization: `src/extensions/multi-agent-pi-extension-registry.ts`
+- Agent identity binding and targeted setup: `src/extensions/multi-agent-pi-extension-registry.ts`
 - Installed Pi resource-loader and dispatch contracts: `@earendil-works/pi-coding-agent`

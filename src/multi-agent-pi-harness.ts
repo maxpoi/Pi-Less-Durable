@@ -1,12 +1,10 @@
 import { resolve } from "node:path";
-import type {
-  InlineExtension,
-  ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AgentLoop } from "./agent/agent-loop.js";
 import {
   createHarnessAgentSession,
   type AgentConfig,
+  type AgentLoopExtensionSources,
 } from "./agent/agent-session-factory.js";
 import { defaultAgentLogger } from "./logger/logger.js";
 import type { AgentLogger } from "./logger/logger.js";
@@ -15,8 +13,7 @@ import { resolveMultiAgentPiHarnessConfigDirectory, type MultiAgentPiHarnessConf
 import { MultiAgentPiConfigStore } from "./config/config-store.js";
 import type { MultiAgentPiConfig } from "./config/config-types.js";
 import { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
-import type { ExecutionEnvFactory } from "./execution-environment.js";
-import { MultiAgentPiExtensionRegistry } from "./extensions/multi-agent-pi-extension-registry.js";
+import { discoverConfigExtensionFiles } from "./extensions/utils.js";
 import {
   PRIMARY_AGENT_TAG,
   assertAgentIdentity,
@@ -37,12 +34,6 @@ export interface MultiAgentPiHarnessOptions {
   readonly modelRuntime: ModelRuntime;
   /** Optional diagnostic sink shared by every admitted Room. */
   readonly logger?: AgentLogger;
-  /** Consumer-owned durable environment factory, resolved afresh for each tool execution. */
-  readonly env?: ExecutionEnvFactory;
-  /** Pi extension files loaded by each Room main and targeted into that Room's agents. */
-  readonly extensionFiles?: readonly string[];
-  /** Inline Pi extensions loaded by each Room main and targeted into that Room's agents. */
-  readonly inlineExtensions?: readonly InlineExtension[];
 }
 
 export interface ReloadMultiAgentPiHarnessOptions {
@@ -54,11 +45,8 @@ export class MultiAgentPiHarness {
   readonly #configStore: MultiAgentPiConfigStore;
   readonly #modelRuntime: ModelRuntime;
   readonly #logger: AgentLogger;
-  readonly #env: ExecutionEnvFactory | undefined;
-  readonly #extensionRegistry = new MultiAgentPiExtensionRegistry();
-  readonly #extensionFiles: readonly string[];
-  readonly #inlineExtensions: readonly InlineExtension[];
   #configDiagnostics: readonly MultiAgentPiHarnessConfigError[] = [];
+  #configExtensionFiles: readonly string[] = [];
   readonly #settingsManager: MultiAgentPiSettingsManager;
   readonly #rooms = new Map<RoomId, Room>();
   #state: MultiAgentPiHarnessState = "created";
@@ -76,11 +64,6 @@ export class MultiAgentPiHarness {
       ),
     );
     this.#logger = options.logger ?? defaultAgentLogger;
-    this.#env = options.env;
-    this.#extensionFiles = (options.extensionFiles ?? []).map(extensionPath =>
-      resolve(process.cwd(), extensionPath)
-    );
-    this.#inlineExtensions = [...(options.inlineExtensions ?? [])];
   }
 
   get configDir(): string {
@@ -171,8 +154,8 @@ export class MultiAgentPiHarness {
   async createAgentLoop(
     room: Room,
     agent: AgentIdentity,
-    config: AgentConfig = {},
-    extensions: readonly InlineExtension[] = [],
+    config: AgentConfig,
+    extensionSources: AgentLoopExtensionSources = {},
   ): Promise<AgentLoop> {
     if (this.#state !== "open") {
       throw new Error(`Cannot create an AgentLoop while the Harness is ${this.#state}`);
@@ -181,6 +164,9 @@ export class MultiAgentPiHarness {
       throw new Error(`Room "${room.id}" is not registered with this Harness`);
     }
     assertAgentIdentity(agent);
+    if (!config || typeof config.cwd !== "string" || !config.cwd.trim()) {
+      throw new Error(`AgentLoop "${agent.id}" requires an explicit cwd`);
+    }
     if (room.has(agent.id)) {
       throw new Error(`Agent "${agent.id}" already exists in Room "${room.id}"`);
     }
@@ -192,18 +178,27 @@ export class MultiAgentPiHarness {
       throw new Error(`Room "${room.id}" requires its primary agent before creating child agents`);
     }
 
+    const normalizedConfig: AgentConfig = {
+      ...config,
+      cwd: resolve(config.cwd),
+    };
+    const extensionFiles = [...new Set([
+      ...this.#configExtensionFiles,
+      ...(extensionSources.extensionFiles ?? []).map(extensionPath =>
+        resolve(process.cwd(), extensionPath)
+      ),
+    ])];
     const { loop } = await createHarnessAgentSession({
       room,
       agent,
-      config,
-      extensions,
+      config: normalizedConfig,
+      extensionSources: {
+        extensionFiles,
+        inlineExtensions: [...(extensionSources.inlineExtensions ?? [])],
+      },
       configDir: this.configDir,
       modelRuntime: this.#modelRuntime,
       settingsManager: this.#settingsManager,
-      ...(this.#env === undefined ? {} : { env: this.#env }),
-      extensionRegistry: this.#extensionRegistry,
-      extensionFiles: this.#extensionFiles,
-      inlineExtensions: this.#inlineExtensions,
       logger: this.#logger,
     });
     return loop;
@@ -218,7 +213,6 @@ export class MultiAgentPiHarness {
     const runtime = {
       configDir: this.configDir,
       onClosed: (closedRoom: Room) => {
-        this.#extensionRegistry.clearRoomRegistrations(closedRoom.id);
         if (this.#rooms.get(closedRoom.id) === closedRoom) {
           this.#rooms.delete(closedRoom.id);
         }
@@ -298,6 +292,7 @@ export class MultiAgentPiHarness {
       const configuration = this.#configStore.initialize();
       this.#configDiagnostics = configuration.diagnostics;
       await this.#settingsManager.reload();
+      this.#configExtensionFiles = discoverConfigExtensionFiles(this.configDir);
       if (this.#state === "opening") {
         this.#state = "open";
       }

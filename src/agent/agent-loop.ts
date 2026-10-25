@@ -115,38 +115,26 @@ export class AgentLoop {
     this.session.setActiveToolsByName([...toolNames]);
   }
 
+  /** Admitted runtime failures resolve as a failed loop; admission validation throws. */
   prompt(message: string, images: readonly ImageContent[] = []): Promise<void> {
     this.#assertPromptable("prompt");
     this.#state = "running";
-    return this.#runLifecycle("prompt", async () => {
-      this.#beginRun();
-      await this.#waitForCompactionBeforePrompt();
-      if (this.#state === "aborted") {
-        await this.#finishPromptRun();
-        this.#finalize();
-        return;
-      }
-
-      const promptMessage = this.#withUserStopReminder(message);
-      try {
+    return this.#runLifecycle("prompt", () => this.#runPromptLifecycle(
+      "prompt",
+      async () => {
+        const promptMessage = this.#withUserStopReminder(message);
         await this.session.prompt(
           promptMessage,
           images.length === 0
             ? undefined
             : { images: images.map(image => ({ ...image })) },
         );
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (!this.#isAborted()) this.#runState.stopReason = "error";
-        this.#runState.lastError = errorMessage;
-        this.#logger.warning(`[${this.#logTag}] Error during prompt`, errorMessage);
-      }
-
-      await this.#finishPromptRun();
-      this.#finalize();
-    });
+      },
+      () => this.#waitForCompactionBeforePrompt(),
+    ));
   }
 
+  /** Admitted runtime failures resolve as a failed loop; admission validation throws. */
   resume(): Promise<void> {
     this.#assertUsable("resume");
     if (this.#activeLifecycle !== undefined) {
@@ -159,23 +147,19 @@ export class AgentLoop {
     }
     this.#state = "running";
     this.#pauseRequested = false;
-    return this.#runLifecycle("resume", async () => {
-      this.#beginRun();
-      try {
-        await this.session.prompt("[SYSTEM: Resume your work. Continue from where you left off.]");
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (!this.#isAborted()) this.#runState.stopReason = "error";
-        this.#runState.lastError = errorMessage;
-        this.#logger.warning(`[${this.#logTag}] Error during resume`, errorMessage);
-      }
-      await this.#finishPromptRun();
-      this.#finalize();
-    });
+    return this.#runLifecycle("resume", () => this.#runPromptLifecycle("resume", () =>
+      this.session.prompt("[SYSTEM: Resume your work. Continue from where you left off.]"),
+    ));
   }
 
+  /** Pause only while AgentSession is processing a prompt; use stop() before that boundary. */
   pause(): void {
     if (this.#state !== "running") return;
+    if (!this.session.isStreaming) {
+      throw new Error(
+        `Cannot pause agent loop "${this.id}" before AgentSession starts processing its prompt; use stop() instead`,
+      );
+    }
     this.#pauseRequested = true;
     this.#logger.info(`[${this.#logTag}] Pause requested — aborting current run`);
     void this.session.abort();
@@ -238,6 +222,48 @@ export class AgentLoop {
   #beginRun(): void {
     this.#runState = createAgentRunState();
     resetAgentEventHandlerState(this.#eventHandlerState, this.messages.length);
+  }
+
+  async #runPromptLifecycle(
+    kind: "prompt" | "resume",
+    promptOperation: () => Promise<void>,
+    beforePrompt?: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      this.#beginRun();
+      await beforePrompt?.();
+    } catch (error) {
+      this.#recordPromptFailure(kind, error);
+      this.#finalize();
+      return;
+    }
+
+    if (!this.#isAborted()) {
+      try {
+        await promptOperation();
+      } catch (error) {
+        this.#recordPromptFailure(kind, error);
+      }
+    }
+
+    try {
+      await this.#finishPromptRun();
+    } catch (error) {
+      this.#recordPromptFailure(`${kind} post-run maintenance`, error);
+    }
+    this.#finalize();
+  }
+
+  #recordPromptFailure(phase: string, error: unknown): void {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const failureAlreadyRecorded = this.#runState.stopReason === "error";
+    if (!this.#isAborted() && !failureAlreadyRecorded) {
+      this.#runState.stopReason = "error";
+    }
+    if (!failureAlreadyRecorded && this.#runState.lastError === undefined) {
+      this.#runState.lastError = errorMessage;
+    }
+    this.#logger.warning(`[${this.#logTag}] Error during ${phase}`, errorMessage);
   }
 
   #abortInterruptedRequestIfNeeded(): void {
@@ -318,12 +344,13 @@ export class AgentLoop {
     if (this.#state === "aborted") {
       this.#runState.stopReason = "aborted";
       this.#pauseRequested = false;
+    } else if (this.#runState.stopReason === "error") {
+      this.#state = "failed";
+      this.#pauseRequested = false;
     } else if (this.#pauseRequested) {
       this.#state = "paused";
       this.#pauseRequested = false;
       this.#logger.info(`[${this.#logTag}] Paused after turn ${this.#runState.turnCount}`);
-    } else if (this.#runState.stopReason === "error") {
-      this.#state = "failed";
     } else if (this.#state === "running") {
       this.#state = "completed";
     }

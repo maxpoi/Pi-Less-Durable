@@ -8,11 +8,12 @@ import {
 import { logger } from "./logger.js";
 
 async function runBot(): Promise<void> {
-  const configDir = join(homedir(), ".multiagentpi");
-  const authPath = join(configDir, "auth.json");
+  const agentDir = join(homedir(), ".multiagentpi");
+  const configDir = join(agentDir, "config");
+  const authPath = join(agentDir, "auth.json");
   const modelRuntime = await ModelRuntime.create({
     authPath,
-    modelsPath: join(configDir, "models.json"),
+    modelsPath: join(agentDir, "models.json"),
   });
   const harness = new MultiAgentPiHarness({ configDir, modelRuntime, logger });
 
@@ -42,7 +43,7 @@ async function runBot(): Promise<void> {
       name: "Main",
       tag: PRIMARY_AGENT_TAG,
     };
-    const main = await harness.createAgentLoop(room, mainIdentity);
+    const main = await harness.createAgentLoop(room, mainIdentity, { cwd: process.cwd() });
     room.register(main);
 
     await room.prompt("Hello");

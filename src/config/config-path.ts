@@ -7,6 +7,8 @@ export type MultiAgentPiHarnessConfigErrorCode =
   | "defaults_invalid_json"
   | "defaults_invalid_root"
   | "config_read_failed"
+  | "config_invalid_json"
+  | "config_invalid_root"
   | "config_write_failed";
 
 export class MultiAgentPiHarnessConfigError extends Error {

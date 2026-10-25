@@ -23,11 +23,9 @@ export type {
 
 export { PRIMARY_AGENT_TAG };
 
-/** Consumer-owned identity and workspace options for a Harness-created Room. */
+/** Consumer-owned identity and persistence options for a Harness-created Room. */
 export interface CreateRoomOptions {
   readonly id?: string;
-  /** Execution working directory passed to Pi and environment resolution. */
-  readonly cwd?: string;
   /** Room agent-data directory. Harness config provides the default after admission. */
   readonly roomDir?: string;
 }
@@ -38,7 +36,6 @@ interface RoomRuntime {
 }
 
 interface RoomConstruction {
-  readonly cwd: string;
   readonly roomDir: string | undefined;
   readonly defaultRoomDirectoryName: string;
 }
@@ -46,7 +43,6 @@ interface RoomConstruction {
 /** One logical Room owning AgentLoops through a LoopManager. */
 export class Room {
   readonly id: RoomId;
-  readonly #cwd: string;
   readonly #loopManager = new LoopManager();
   readonly #runtime: RoomRuntime;
   readonly #resolvedRoomDir: string;
@@ -59,7 +55,6 @@ export class Room {
     runtime: RoomRuntime,
   ) {
     this.id = id;
-    this.#cwd = construction.cwd;
     this.#resolvedRoomDir = construction.roomDir === undefined
       ? resolve(runtime.configDir, "rooms", construction.defaultRoomDirectoryName)
       : resolve(construction.roomDir);
@@ -78,16 +73,11 @@ export class Room {
     return new Room(
       id,
       {
-        cwd: resolve(options.cwd ?? process.cwd()),
         roomDir: options.roomDir,
         defaultRoomDirectoryName,
       },
       runtime,
     );
-  }
-
-  get cwd(): string {
-    return this.#cwd;
   }
 
   get roomDir(): string {

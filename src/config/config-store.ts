@@ -161,12 +161,28 @@ export class MultiAgentPiConfigStore implements MultiAgentPiConfigStorage {
 
   #readConfigObject(path: string): Record<string, unknown> {
     if (!existsSync(path)) return {};
+
+    let raw: unknown;
     try {
-      const raw = readJsonFile(path);
-      return isRecord(raw) ? raw : {};
-    } catch {
-      return {};
+      raw = readJsonFile(path);
+    } catch (error) {
+      const code = error instanceof SyntaxError ? "config_invalid_json" : "config_read_failed";
+      throw new MultiAgentPiHarnessConfigError(
+        code,
+        path,
+        `Failed to read MultiAgentPiHarness config: ${path}`,
+        error,
+      );
     }
+
+    if (!isRecord(raw)) {
+      throw new MultiAgentPiHarnessConfigError(
+        "config_invalid_root",
+        path,
+        `MultiAgentPiHarness config must contain a JSON object: ${path}`,
+      );
+    }
+    return raw;
   }
 
   #writeConfigObject(config: Record<string, unknown>): void {
