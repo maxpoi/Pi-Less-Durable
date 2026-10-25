@@ -1,93 +1,55 @@
 export {
   Agent,
-  AgentLoop,
-  AgentSession,
-  KNOWN_THINKING_LEVELS,
-  MESSAGE_BATCH_WINDOW_MS,
-  MultiAgentPiSettingsManager,
-  MessagePostQueue,
-  ModelRuntime,
-  SessionManager,
-  TargetedLoopExtensionRegistry,
-  accountAgentEvent,
-  applyAssistantMessageTerminalState,
-  bindExecutionEnv,
-  createAgentLoopRunState,
-  createPiExtensionLoader,
-  defaultAgentLoopLogger,
-  executionEnvContext,
-  extractResultText,
-  formatAssistantErrorDetails,
-  formatRetryDetails,
-  forkBranchEntries,
-  forkConversationHistory,
-  getCurrentAgentLoopExecution,
-  getExternalSourcesPath,
-  requireCurrentAgentLoopExecutionEnv,
-  resolveCurrentAgentLoopExecutionEnv,
-  parseMultiAgentPiConfig,
-  readExternalSources,
-  writeExternalSources,
-  type AgentLoopCompactionPolicy,
-  type AgentLoopEventHook,
-  type AgentLoopExecutionContext,
-  type AgentLoopExecutionEnv,
-  type AgentLoopLifecycle,
-  type AgentLoopLogger,
-  type AgentLoopModelChangeOptions,
-  type AgentLoopOptions,
-  type AgentLoopResult,
-  type AgentLoopRuntime,
-  type AgentLoopState,
-  type AgentLoopUsageEntry,
-  type AgentLoopUsageStore,
   type AgentMessage,
   type AgentOptions,
+} from "@earendil-works/pi-agent-core";
+export {
+  AgentSession,
+  ModelRuntime,
+  SessionManager,
   type AgentSessionConfig,
-  type Api,
-  type BatchingMessageQueue,
-  type AgentEventAccounting,
-  type AgentLoopRunState,
-  type AgentLoopRunUsage,
-  type ExecutionEnv,
-  type ExecutionEnvFactory,
-  type ExecutionEnvTarget,
-  type ExecutionEnvUse,
-  type ExternalSourceEntry,
+  type CreateAgentSessionResult,
   type ExtensionAPI,
   type ExtensionFactory,
-  type ExternalSourcesManifest,
-  type MessagePostErrorHandler,
-  type MessageQueue,
-  type MultiAgentPiCompactionSettings,
-  type MultiAgentPiConfig,
-  type Model,
-  type MultiAgentPiRetrySettings,
-  type PendingToolExecution,
-  type PiExtensionLoaderOptions,
+  type InlineExtension,
   type SessionEntry,
   type SettingsManager,
-  type ThinkingLevel,
   type ToolDefinition,
-} from "#core";
+} from "@earendil-works/pi-coding-agent";
+export type { Api, Model } from "@earendil-works/pi-ai";
+
 export {
-  SessionBridge,
-  type SessionBridgeRunInput,
-} from "./bridge/session-bridge.js";
-export type {
-  AgentConfig,
-  ConversationHistory,
-} from "./agent/agent-config.js";
+  launchBundledPiLogin,
+  type LaunchBundledPiLoginOptions,
+  type LaunchBundledPiLoginResult,
+} from "./bundled-pi.js";
 export {
+  RoomBridge,
+  type RoomBridgeRunInput,
+} from "./bridge/room-bridge.js";
+export {
+  AgentLoop,
+  type AgentLoopLifecycleKind,
+  type AgentLoopState,
+} from "./agent/agent-loop.js";
+export type { AgentConfig } from "./agent/agent-session-factory.js";
+export {
+  forkBranchEntries,
+  forkConversationHistory,
   initializeConversationHistory,
+  type ConversationHistory,
   type InitializeConversationHistoryOptions,
-} from "./agent/conversation-history.js";
+} from "./agent/agent-session-utils.js";
+export {
+  defaultAgentLogger,
+  type AgentLogger,
+} from "./logger/logger.js";
 export {
   CODE_REVIEW_IDENTITY_PROMPT,
   CODE_REVIEW_METHODOLOGY_PROMPT,
   CODE_REVIEW_STANDARDS_PROMPT,
   buildCodeReviewTaskPrompt,
-} from "./agent-loop/code-review-prompt.js";
+} from "./agent-loop-imp/code-review-prompt.js";
 export {
   MultiAgentPiHarnessConfigError,
   type MultiAgentPiHarnessConfigErrorCode,
@@ -96,26 +58,54 @@ export {
   MultiAgentPiConfigStore,
   type LoadedMultiAgentPiHarnessConfig,
 } from "./config/config-store.js";
+export { parseMultiAgentPiConfig } from "./config/config-parser.js";
+export type {
+  KnownProvider,
+  MultiAgentPiCompactionSettings,
+  MultiAgentPiConfig,
+  MultiAgentPiRetrySettings,
+  ThinkingLevel,
+} from "./config/config-types.js";
+export { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
+export {
+  executionEnvContext,
+  getCurrentAgentExecution,
+  requireCurrentAgentExecutionEnv,
+  resolveCurrentAgentExecutionEnv,
+  type AgentExecutionContext,
+  type ExecutionEnv,
+  type ExecutionEnvFactory,
+  type ExecutionEnvTarget,
+  type ExecutionEnvUse,
+} from "./execution-environment.js";
+export {
+  multiAgentPi,
+  type MultiAgentPiExtensionAPI,
+  type MultiAgentPiExtensionRegistration,
+  type MultiAgentPiExtensionTarget,
+} from "./extensions/multi-agent-pi-extension-registry.js";
 export {
   MultiAgentPiHarness,
-  type MultiAgentPiHarnessExtensionTarget,
   type MultiAgentPiHarnessOptions,
   type MultiAgentPiHarnessState,
   type ReloadMultiAgentPiHarnessOptions,
 } from "./multi-agent-pi-harness.js";
-export type {
-  SessionInfra,
-  SessionModelState,
-  SessionResourceState,
-} from "./session/session-infra.js";
 export {
-  MultiAgentPiSession,
-  PRIMARY_AGENT_LOOP_ID,
-  createMultiAgentPiSession,
-  type CreateMultiAgentPiSessionOptions,
-  type MultiAgentPiSessionState,
-  type Session,
-  type SessionId,
-  type SessionPromptOptions,
-  type SessionState,
-} from "./session/multi-agent-pi-session.js";
+  MESSAGE_BATCH_WINDOW_MS,
+  MessagePostQueue,
+  type BatchingMessageQueue,
+  type MessagePostErrorHandler,
+  type MessageQueue,
+} from "./output/message-post-queue.js";
+export {
+  PRIMARY_AGENT_TAG,
+  type AgentIdentity,
+} from "./room/loop-manager.js";
+export {
+  Room,
+  createRoomId,
+  type CreateRoomOptions,
+  type RoomId,
+  type RoomPromptOptions,
+  type RoomState,
+} from "./room/room.js";
