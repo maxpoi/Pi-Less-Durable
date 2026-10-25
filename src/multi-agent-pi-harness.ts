@@ -1,25 +1,33 @@
+import { resolve } from "node:path";
+import type {
+  InlineExtension,
+  ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
+import type { AgentLoop } from "./agent/agent-loop.js";
 import {
-  MultiAgentPiCompactionPolicy,
-  MultiAgentPiSettingsManager,
-  TargetedLoopExtensionRegistry,
-  defaultAgentLoopLogger,
-  setupCompactionStripExtension,
-  type AgentLoopLogger,
-  type ExecutionEnvFactory,
-  type ExtensionFactory,
-  type ExtensionLoopContext,
-  type ModelRuntime,
-  type MultiAgentPiConfig,
-} from "#core";
+  createHarnessAgentSession,
+  type AgentConfig,
+} from "./agent/agent-session-factory.js";
+import { defaultAgentLogger } from "./logger/logger.js";
+import type { AgentLogger } from "./logger/logger.js";
+import { MultiAgentPiCompactionPolicy } from "./compaction/compaction-policy.js";
 import { resolveMultiAgentPiHarnessConfigDirectory, type MultiAgentPiHarnessConfigError } from "./config/config-path.js";
 import { MultiAgentPiConfigStore } from "./config/config-store.js";
+import type { MultiAgentPiConfig } from "./config/config-types.js";
+import { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
+import type { ExecutionEnvFactory } from "./execution-environment.js";
+import { MultiAgentPiExtensionRegistry } from "./extensions/multi-agent-pi-extension-registry.js";
 import {
-  MultiAgentPiSession,
-  PRIMARY_AGENT_LOOP_ID,
-  createMultiAgentPiSession,
-  type CreateMultiAgentPiSessionOptions,
-  type SessionId,
-} from "./session/multi-agent-pi-session.js";
+  PRIMARY_AGENT_TAG,
+  assertAgentIdentity,
+  type AgentIdentity,
+} from "./room/loop-manager.js";
+import {
+  Room,
+  createRoomForHarness,
+  type CreateRoomOptions,
+  type RoomId,
+} from "./room/room.js";
 
 export type MultiAgentPiHarnessState = "created" | "opening" | "open" | "reloading" | "closing" | "closed";
 
@@ -27,34 +35,32 @@ export interface MultiAgentPiHarnessOptions {
   readonly configDir?: string;
   /** Host-owned model/provider/auth runtime. MultiAgentPiHarness borrows but never closes it. */
   readonly modelRuntime: ModelRuntime;
-  /** Optional diagnostic sink shared by every admitted Session. */
-  readonly logger?: AgentLoopLogger;
-  /** Consumer-owned Pi environment factory, resolved afresh for each use by every AgentLoop. */
-  readonly env?: ExecutionEnvFactory<SessionId>;
+  /** Optional diagnostic sink shared by every admitted Room. */
+  readonly logger?: AgentLogger;
+  /** Consumer-owned durable environment factory, resolved afresh for each tool execution. */
+  readonly env?: ExecutionEnvFactory;
+  /** Pi extension files loaded by each Room main and targeted into that Room's agents. */
+  readonly extensionFiles?: readonly string[];
+  /** Inline Pi extensions loaded by each Room main and targeted into that Room's agents. */
+  readonly inlineExtensions?: readonly InlineExtension[];
 }
 
 export interface ReloadMultiAgentPiHarnessOptions {
-  readonly sessionId?: SessionId;
-  readonly loopId?: string;
+  readonly roomId?: RoomId;
+  readonly agentId?: string;
 }
-
-export type MultiAgentPiHarnessExtensionTarget =
-  | "all"
-  | {
-      readonly sessionId: SessionId;
-      readonly loopIds: "all" | readonly string[];
-    }
-  | ((context: ExtensionLoopContext) => boolean);
 
 export class MultiAgentPiHarness {
   readonly #configStore: MultiAgentPiConfigStore;
   readonly #modelRuntime: ModelRuntime;
-  readonly #logger: AgentLoopLogger;
-  readonly #env: ExecutionEnvFactory<SessionId> | undefined;
-  readonly #extensionRegistry = new TargetedLoopExtensionRegistry();
+  readonly #logger: AgentLogger;
+  readonly #env: ExecutionEnvFactory | undefined;
+  readonly #extensionRegistry = new MultiAgentPiExtensionRegistry();
+  readonly #extensionFiles: readonly string[];
+  readonly #inlineExtensions: readonly InlineExtension[];
   #configDiagnostics: readonly MultiAgentPiHarnessConfigError[] = [];
   readonly #settingsManager: MultiAgentPiSettingsManager;
-  readonly #sessions = new Map<SessionId, MultiAgentPiSession>();
+  readonly #rooms = new Map<RoomId, Room>();
   #state: MultiAgentPiHarnessState = "created";
   #openPromise: Promise<void> | undefined;
   #closePromise: Promise<void> | undefined;
@@ -69,13 +75,12 @@ export class MultiAgentPiHarness {
         modelRef => this.#modelRuntime.getModel(modelRef.provider, modelRef.id),
       ),
     );
-    this.#logger = options.logger ?? defaultAgentLoopLogger;
+    this.#logger = options.logger ?? defaultAgentLogger;
     this.#env = options.env;
-    this.#extensionRegistry.register(
-      undefined,
-      "all",
-      pi => setupCompactionStripExtension(pi, this.#logger),
+    this.#extensionFiles = (options.extensionFiles ?? []).map(extensionPath =>
+      resolve(process.cwd(), extensionPath)
     );
+    this.#inlineExtensions = [...(options.inlineExtensions ?? [])];
   }
 
   get configDir(): string {
@@ -121,12 +126,12 @@ export class MultiAgentPiHarness {
   }
 
   /**
-   * Reload only when every targeted Session is idle.
+   * Reload only when every targeted Room is idle.
    *
    * Event-bus integration contract for the later Bridge layer: before checking
-   * isBusy, Harness must make its bus queue all incoming room, periodic, and
-   * background-agent messages so no new prompt can reach a Session or AgentLoop.
-   * Each queued item must retain its original Session/loop target, complete
+   * isBusy, Harness must make its bus queue all incoming Room, periodic, and
+   * background-agent messages so no new prompt can reach a Room or native AgentSession.
+   * Each queued item must retain its original Room/loop target, complete
    * payload, and caller promise. Whether reload succeeds or fails, wait until
    * reload settles and Harness returns to open, then reopen the bus and flush in
    * arrival order. Resolve or reject each original promise from its dispatched
@@ -136,22 +141,21 @@ export class MultiAgentPiHarness {
     if (this.#state !== "open") {
       return Promise.reject(new Error(`Cannot reload MultiAgentPiHarness while it is ${this.#state}`));
     }
-    if (options.loopId !== undefined && options.sessionId === undefined) {
-      return Promise.reject(new Error("Targeted AgentLoop reload requires a sessionId"));
+    if (options.agentId !== undefined && options.roomId === undefined) {
+      return Promise.reject(new Error("Targeted agent reload requires a roomId"));
     }
-
-    const sessions = [...this.#sessions.values()];
-    let targetedSession: MultiAgentPiSession | undefined;
+    const rooms = [...this.#rooms.values()];
+    let targetedRoom: Room | undefined;
     try {
-      targetedSession = options.sessionId === undefined
+      targetedRoom = options.roomId === undefined
         ? undefined
-        : this.#requireSession(options.sessionId);
-      const sessionsToReload = targetedSession === undefined ? sessions : [targetedSession];
-      const busySession = sessionsToReload.find(session => session.isBusy);
-      if (busySession !== undefined) {
-        throw new Error(`Cannot reload MultiAgentPiHarness while Session "${busySession.id}" is busy`);
+        : this.#requireRoom(options.roomId);
+      const roomsToReload = targetedRoom === undefined ? rooms : [targetedRoom];
+      const busyRoom = roomsToReload.find(room => room.isBusy);
+      if (busyRoom !== undefined) {
+        throw new Error(`Cannot reload MultiAgentPiHarness while Room "${busyRoom.id}" is busy`);
       }
-      if (targetedSession === undefined) {
+      if (targetedRoom === undefined) {
         const configuration = this.#configStore.initialize();
         this.#configDiagnostics = configuration.diagnostics;
       }
@@ -160,131 +164,129 @@ export class MultiAgentPiHarness {
     }
 
     this.#state = "reloading";
-    return this.#reloadRuntime(sessions, targetedSession, options.loopId);
+    return this.#reloadRuntime(rooms, targetedRoom, options.agentId);
   }
 
-  /** Declare a Pi extension for every Session's canonical `main` loop; existing loops adopt it on reload. */
-  registerExtension(extension: ExtensionFactory): void {
-    this.#assertExtensionRegistrationAllowed();
-    this.#extensionRegistry.register(
-      undefined,
-      context => context.loopId === PRIMARY_AGENT_LOOP_ID,
-      extension,
-    );
-  }
-
-  /** Declare an explicit process/session/loop target; `all` means every loop in scope. */
-  registerLoopExtension(target: MultiAgentPiHarnessExtensionTarget, extension: ExtensionFactory): void {
-    this.#assertExtensionRegistrationAllowed();
-    this.#extensionRegistry.register(undefined, target, extension);
-  }
-
-  /** Create an empty Session; the host explicitly creates, designates, and selects its canonical `main` loop. */
-  async createSession(options: CreateMultiAgentPiSessionOptions = {}): Promise<MultiAgentPiSession> {
+  /** Create one AgentLoop around a native Pi AgentSession without registering it in the Room. */
+  async createAgentLoop(
+    room: Room,
+    agent: AgentIdentity,
+    config: AgentConfig = {},
+    extensions: readonly InlineExtension[] = [],
+  ): Promise<AgentLoop> {
     if (this.#state !== "open") {
-      throw new Error(`Cannot create a MultiAgentPiSession while the harness is ${this.#state}`);
+      throw new Error(`Cannot create an AgentLoop while the Harness is ${this.#state}`);
+    }
+    if (this.#rooms.get(room.id) !== room) {
+      throw new Error(`Room "${room.id}" is not registered with this Harness`);
+    }
+    assertAgentIdentity(agent);
+    if (room.has(agent.id)) {
+      throw new Error(`Agent "${agent.id}" already exists in Room "${room.id}"`);
+    }
+    const isPrimary = agent.tag.trim() === PRIMARY_AGENT_TAG;
+    if (isPrimary && room.primaryId !== undefined) {
+      throw new Error(`Room "${room.id}" already has a primary agent`);
+    }
+    if (!isPrimary && room.primaryId === undefined) {
+      throw new Error(`Room "${room.id}" requires its primary agent before creating child agents`);
     }
 
-    let session = createMultiAgentPiSession(options);
-    while (this.#sessions.has(session.id)) {
-      if (options.id !== undefined) {
-        throw new Error(`Session "${session.id}" is already registered`);
-      }
-      session = createMultiAgentPiSession(options);
-    }
-    this.addSession(session);
-    return session;
-  }
-
-  /** Transfer a host-created MultiAgentPiSession into this Harness lifecycle; close it through the Harness. */
-  addSession(session: MultiAgentPiSession): void {
-    if (this.#state !== "open") {
-      throw new Error(`Cannot add a Session while the harness is ${this.#state}`);
-    }
-    if (!(session instanceof MultiAgentPiSession)) {
-      throw new Error("MultiAgentPiHarness only accepts MultiAgentPiSession instances");
-    }
-    if (session.getState() !== "open") {
-      throw new Error(`Cannot add Session "${session.id}" while it is ${session.getState()}`);
-    }
-    if (this.#sessions.has(session.id)) {
-      throw new Error(`Session "${session.id}" is already registered`);
-    }
-    const runtime = {
+    const { loop } = await createHarnessAgentSession({
+      room,
+      agent,
+      config,
+      extensions,
       configDir: this.configDir,
       modelRuntime: this.#modelRuntime,
-      settings: this.#settingsManager,
-      logger: this.#logger,
+      settingsManager: this.#settingsManager,
       ...(this.#env === undefined ? {} : { env: this.#env }),
       extensionRegistry: this.#extensionRegistry,
-      onClosed: (closedSession: MultiAgentPiSession) => {
-        if (this.#sessions.get(closedSession.id) === closedSession) {
-          this.#sessions.delete(closedSession.id);
+      extensionFiles: this.#extensionFiles,
+      inlineExtensions: this.#inlineExtensions,
+      logger: this.#logger,
+    });
+    return loop;
+  }
+
+  /** Create and admit an initialized Room; agent creation and registration remain explicit. */
+  createRoom(options: CreateRoomOptions = {}): Room {
+    if (this.#state !== "open") {
+      throw new Error(`Cannot create a Room while the Harness is ${this.#state}`);
+    }
+
+    const runtime = {
+      configDir: this.configDir,
+      onClosed: (closedRoom: Room) => {
+        this.#extensionRegistry.clearRoomRegistrations(closedRoom.id);
+        if (this.#rooms.get(closedRoom.id) === closedRoom) {
+          this.#rooms.delete(closedRoom.id);
         }
       },
     };
-    session.initialize(runtime);
-    this.#sessions.set(session.id, session);
-  }
-
-  #assertExtensionRegistrationAllowed(): void {
-    if (this.#state === "reloading" || this.#state === "closing" || this.#state === "closed") {
-      throw new Error(`Cannot register an extension while MultiAgentPiHarness is ${this.#state}`);
+    let room = createRoomForHarness(runtime, options);
+    while (this.#rooms.has(room.id)) {
+      if (options.id !== undefined) {
+        throw new Error(`Room "${room.id}" is already registered`);
+      }
+      room = createRoomForHarness(runtime, options);
     }
+    this.#rooms.set(room.id, room);
+    return room;
   }
 
-  getSession(id: SessionId): MultiAgentPiSession | undefined {
-    return this.#sessions.get(id);
+  getRoom(id: RoomId): Room | undefined {
+    return this.#rooms.get(id);
   }
 
-  #requireSession(id: SessionId): MultiAgentPiSession {
-    const session = this.#sessions.get(id);
-    if (!session) throw new Error(`MultiAgentPiSession "${id}" not found`);
-    return session;
+  #requireRoom(id: RoomId): Room {
+    const room = this.#rooms.get(id);
+    if (!room) throw new Error(`Room "${id}" not found`);
+    return room;
   }
 
-  listSessions(): readonly MultiAgentPiSession[] {
-    return Object.freeze([...this.#sessions.values()]);
+  listRooms(): readonly Room[] {
+    return Object.freeze([...this.#rooms.values()]);
   }
 
-  async closeSession(id: SessionId): Promise<void> {
+  async closeRoom(id: RoomId): Promise<void> {
     if (this.#state !== "open") {
-      throw new Error(`Cannot close a Session while the harness is ${this.#state}`);
+      throw new Error(`Cannot close a Room while the Harness is ${this.#state}`);
     }
-    const session = this.#sessions.get(id);
-    if (!session) return;
+    const room = this.#rooms.get(id);
+    if (!room) return;
     try {
-      await session.close();
+      await room.close();
     } finally {
-      if (this.#sessions.get(id) === session && session.getState() === "closed") {
-        this.#sessions.delete(id);
+      if (this.#rooms.get(id) === room && room.getState() === "closed") {
+        this.#rooms.delete(id);
       }
     }
   }
 
   async #reloadRuntime(
-    sessions: readonly MultiAgentPiSession[],
-    targetedSession: MultiAgentPiSession | undefined,
-    loopId: string | undefined,
+    rooms: readonly Room[],
+    targetedRoom: Room | undefined,
+    agentId: string | undefined,
   ): Promise<void> {
     try {
-      if (targetedSession !== undefined) {
-        await targetedSession.reload(loopId);
+      if (targetedRoom !== undefined) {
+        await targetedRoom.reload(agentId);
         return;
       }
 
       await this.#settingsManager.reload();
       const errors: unknown[] = [];
-      for (const session of sessions) {
+      for (const room of rooms) {
         try {
-          await session.reload();
+          await room.reload();
         } catch (error) {
           errors.push(error);
         }
       }
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) {
-        throw new AggregateError(errors, "One or more MultiAgentPiSessions failed to reload cleanly");
+        throw new AggregateError(errors, "One or more Rooms failed to reload cleanly");
       }
     } finally {
       if (this.#state === "reloading") this.#state = "open";
@@ -315,23 +317,23 @@ export class MultiAgentPiHarness {
     if (this.#state === "reloading") {
       return Promise.reject(new Error("Cannot close MultiAgentPiHarness while it is reloading"));
     }
-    const reloadingSession = [...this.#sessions.values()]
-      .find(session => session.isReloading);
-    if (reloadingSession !== undefined) {
+    const reloadingRoom = [...this.#rooms.values()]
+      .find(room => room.isReloading);
+    if (reloadingRoom !== undefined) {
       return Promise.reject(
-        new Error(`Cannot close MultiAgentPiHarness while Session "${reloadingSession.id}" is reloading`),
+        new Error(`Cannot close MultiAgentPiHarness while Room "${reloadingRoom.id}" is reloading`),
       );
     }
 
     this.#state = "closing";
-    // Session.close() synchronously transitions to closed while Harness keeps
+    // Room.close() synchronously transitions to closed while Harness keeps
     // ownership until each returned teardown promise settles.
-    const sessionClosures = [...this.#sessions.values()].map(session => session.close());
-    this.#closePromise = this.#closeRuntime(sessionClosures);
+    const roomClosures = [...this.#rooms.values()].map(room => room.close());
+    this.#closePromise = this.#closeRuntime(roomClosures);
     return this.#closePromise;
   }
 
-  async #closeRuntime(sessionClosures: readonly Promise<void>[]): Promise<void> {
+  async #closeRuntime(roomClosures: readonly Promise<void>[]): Promise<void> {
     try {
       await this.#openPromise;
     } catch {
@@ -339,17 +341,17 @@ export class MultiAgentPiHarness {
       // still settle the lifecycle and release any partially initialized state.
     }
     const errors: unknown[] = [];
-    const closeResults = await Promise.allSettled(sessionClosures);
+    const closeResults = await Promise.allSettled(roomClosures);
     for (const result of closeResults) {
       if (result.status === "rejected") errors.push(result.reason);
     }
 
-    this.#sessions.clear();
+    this.#rooms.clear();
     this.#state = "closed";
 
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) {
-      throw new AggregateError(errors, "One or more MultiAgentPiSessions failed to close cleanly");
+      throw new AggregateError(errors, "One or more Rooms failed to close cleanly");
     }
   }
 }

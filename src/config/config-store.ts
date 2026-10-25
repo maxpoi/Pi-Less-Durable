@@ -1,13 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import {
-  deepMerge,
-  parseMultiAgentPiConfig,
-  readJsonFile,
-  type MultiAgentPiConfig,
-  type MultiAgentPiConfigStorage,
-} from "#core";
+import { deepMerge, readJsonFile } from "./config-json-utils.js";
+import { parseMultiAgentPiConfig } from "./config-parser.js";
+import type { MultiAgentPiConfigStorage } from "./config-storage.js";
+import type { MultiAgentPiConfig } from "./config-types.js";
 import { MultiAgentPiHarnessConfigError } from "./config-path.js";
 
 export interface LoadedMultiAgentPiHarnessConfig {
