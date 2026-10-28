@@ -33,6 +33,12 @@ import {
   createPiExtensionStreamFn,
 } from "./to-pi-bindings/pi-extension-bindings.js";
 import { createProviderStreamFn } from "./to-pi-bindings/provider-stream.js";
+import {
+  createAgentSystemPrompt,
+  createAgentSystemPromptExtensions,
+  resolveAgentSystemPromptMain,
+  type AgentSystemPrompt,
+} from "./system-prompt.js";
 import type { AgentLogger } from "../logger/logger.js";
 import type { CodexServerCompactionController } from "../compaction/codex-server-compaction.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
@@ -56,6 +62,8 @@ export interface AgentConfig {
   readonly model?: Model<Api>;
   readonly thinkingLevel?: ThinkingLevel;
   readonly initialConversationHistory?: ConversationHistory;
+  /** Mutable structured prompt state owned and exposed by the created AgentLoop. */
+  readonly systemPrompt?: AgentSystemPrompt;
 }
 
 /** Native Pi extension sources selected for one AgentLoop. */
@@ -233,9 +241,11 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       : resolve(options.room!.roomDir, "loops", options.agent.id);
 
   const agent = options.agent;
+  const systemPrompt = createAgentSystemPrompt(options.config.systemPrompt);
   const config: AgentConfig = {
     ...options.config,
     cwd: resolve(options.config.cwd),
+    systemPrompt,
   };
   const extensionFiles = [...new Set(
     (options.extensionSources?.extensionFiles ?? []).map(extensionPath =>
@@ -288,6 +298,9 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     logger,
     disabledExtensions,
   });
+  const promptExtensions = createAgentSystemPromptExtensions(systemPrompt);
+  const promptComposerPath = `<inline:${promptExtensions.composer.name}>`;
+  const promptFinalizerPath = `<inline:${promptExtensions.finalizer.name}>`;
   const codemodePath = `<inline:${codemodeExtension.name}>`;
   const compactionStripPath = `<inline:${compactionStripExtension.name}>`;
   const defaultExtensionPaths = new Set(
@@ -301,13 +314,21 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       settingsManager: piSettingsManager,
       additionalExtensionPaths: [...extensionFiles],
       extensionFactories: [
+        promptExtensions.composer,
         ...inlineExtensions,
         codemodeExtension,
         compactionStripExtension,
         ...defaultExtensions,
         codexServerCompactionExtension,
+        promptExtensions.finalizer,
       ],
       extensionsOverride: result => {
+        const loadedPromptComposer = result.extensions.find(
+          extension => extension.path === promptComposerPath,
+        );
+        const loadedPromptFinalizer = result.extensions.find(
+          extension => extension.path === promptFinalizerPath,
+        );
         const loadedCodemode = result.extensions.find(
           extension => extension.path === codemodePath,
         );
@@ -325,7 +346,9 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
           extension => extension.path === codexServerCompactionPath,
         );
         const consumers = result.extensions.filter(extension =>
-          extension.path !== codemodePath
+          extension.path !== promptComposerPath
+          && extension.path !== promptFinalizerPath
+          && extension.path !== codemodePath
           && extension.path !== compactionStripPath
           && !defaultExtensionPaths.has(extension.path)
           && extension.path !== codexServerCompactionPath
@@ -334,6 +357,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
         return {
           ...result,
           extensions: [
+            ...(loadedPromptComposer === undefined ? [] : [loadedPromptComposer]),
             ...(loadedCodemode === undefined ? [] : [loadedCodemode]),
             ...(loadedCompactionStrip === undefined ? [] : [loadedCompactionStrip]),
             ...loadedDefaultExtensions,
@@ -341,6 +365,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
             ...(loadedCodexServerCompaction === undefined
               ? []
               : [loadedCodexServerCompaction]),
+            ...(loadedPromptFinalizer === undefined ? [] : [loadedPromptFinalizer]),
           ],
         };
       },
@@ -349,7 +374,10 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPrompt: "",
+      systemPrompt: resolveAgentSystemPromptMain(systemPrompt.main),
+      systemPromptOverride: () => resolveAgentSystemPromptMain(systemPrompt.main),
+      appendSystemPrompt: [],
+      appendSystemPromptOverride: () => [],
     },
     {
       ...(hasRoom ? { roomId: options.room!.id } : {}),
@@ -385,6 +413,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     settingsManager,
     logger,
     disabledExtensions,
+    systemPrompt,
   });
   if (!hasRoom) return loop;
 
