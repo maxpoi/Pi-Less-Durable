@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { CompactionResult } from "@earendil-works/pi-coding-agent";
-import type { AgentLoop } from "../agent/agent-loop.js";
+import { AgentLoop } from "../agent/agent-loop.js";
+import { MultiAgentPiHarness } from "../multi-agent-pi-harness.js";
+import {
+  resolveExplicitPersistenceDirectory,
+  resolvePersistenceDirectory,
+} from "../path-validation.js";
+import { archiveRoomSession } from "./session-archive.js";
 import {
   LoopManager,
   PRIMARY_AGENT_TAG,
@@ -10,74 +17,89 @@ import {
   type AgentRegistration,
 } from "./loop-manager.js";
 import type {
+  BeforeRoomResetEvent,
+  BeforeRoomResetHandler,
+  CreateRoomOptions,
+  CreateRoomResult,
+  PrimaryAgentLoopOptions,
+  ResetRoomOptions,
+  ResetRoomResult,
   RoomId,
   RoomPromptOptions,
+  RoomResetEndEvent,
+  RoomResetEndHandler,
   RoomState,
 } from "./room-types.js";
 
 export type {
+  BeforeRoomResetEvent,
+  BeforeRoomResetHandler,
+  CreateRoomOptions,
+  CreateRoomResult,
+  PrimaryAgentLoopOptions,
+  ResetRoomOptions,
+  ResetRoomResult,
   RoomId,
   RoomPromptOptions,
+  RoomResetEndEvent,
+  RoomResetEndHandler,
   RoomState,
 } from "./room-types.js";
 
 export { PRIMARY_AGENT_TAG };
 
-/** Consumer-owned identity and persistence options for a Harness-created Room. */
-export interface CreateRoomOptions {
-  readonly id?: string;
-  /** Room agent-data directory. Harness workingDir provides the default. */
-  readonly roomDir?: string;
-}
-
-interface RoomRuntime {
-  readonly workingDir: string;
-  readonly onClosed: (room: Room) => void;
-}
-
-interface RoomConstruction {
-  readonly roomDir: string | undefined;
-  readonly defaultRoomDirectoryName: string;
+interface RoomArchiveResult {
+  readonly archiveName?: string;
 }
 
 /** One logical Room owning AgentLoops through a LoopManager. */
 export class Room {
   readonly id: RoomId;
   readonly #loopManager = new LoopManager();
-  readonly #runtime: RoomRuntime;
   readonly #resolvedRoomDir: string;
+  readonly #beforeResetHandlers = new Set<BeforeRoomResetHandler>();
+  readonly #resetEndHandlers = new Set<RoomResetEndHandler>();
+  readonly #closedHandlers = new Set<(room: Room) => void>();
   #state: RoomState = "open";
   #closePromise: Promise<void> | undefined;
 
   private constructor(
     id: RoomId,
-    construction: RoomConstruction,
-    runtime: RoomRuntime,
+    roomDir: string,
   ) {
     this.id = id;
-    this.#resolvedRoomDir = construction.roomDir === undefined
-      ? resolve(runtime.workingDir, "rooms", construction.defaultRoomDirectoryName)
-      : resolve(construction.roomDir);
-    this.#runtime = runtime;
+    this.#resolvedRoomDir = roomDir;
   }
 
-  /** @internal Harness is the sole Room factory. */
-  static createForHarness(
-    runtime: RoomRuntime,
-    options: CreateRoomOptions = {},
-  ): Room {
+  /** Create one standalone Room, optionally with an automatically registered primary. */
+  static async create(options: CreateRoomOptions = {}): Promise<CreateRoomResult> {
     const id = createRoomId(options.id);
-    const defaultRoomDirectoryName = options.id === undefined
-      ? id
-      : Buffer.from(id, "utf8").toString("base64url");
-    return new Room(
-      id,
-      {
-        roomDir: options.roomDir,
-        defaultRoomDirectoryName,
-      },
-      runtime,
-    );
+    const roomDir = options.roomDir === undefined
+      ? resolvePersistenceDirectory(
+          join(MultiAgentPiHarness.instance.workingDir, "rooms", randomUUID()),
+        )
+      : resolveExplicitPersistenceDirectory(options.roomDir, "Room directory");
+    const room = new Room(id, roomDir);
+
+    try {
+      if (options.primaryLoop === undefined) return { room };
+      assertAgentIdentity(options.primaryLoop.agent);
+      if (options.primaryLoop.agent.tag.trim() !== PRIMARY_AGENT_TAG) {
+        throw new Error(`Primary AgentLoop must use tag "${PRIMARY_AGENT_TAG}"`);
+      }
+      const primaryLoop = await AgentLoop.create({ room, ...options.primaryLoop });
+      return { room, primaryLoop };
+    } catch (error) {
+      try {
+        await room.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Failed to discard Room "${room.id}" after primary creation failed`,
+        );
+      }
+      throw error;
+    }
   }
 
   get roomDir(): string {
@@ -94,6 +116,10 @@ export class Room {
 
   get isReloading(): boolean {
     return this.#state === "reloading";
+  }
+
+  get isResetting(): boolean {
+    return this.#state === "resetting";
   }
 
   get isBusy(): boolean {
@@ -121,13 +147,7 @@ export class Room {
 
   register(loop: AgentLoop): void {
     this.#assertOpen("register an agent");
-    assertAgentIdentity(loop);
-    const isPrimary = loop.tag === PRIMARY_AGENT_TAG;
-    if (isPrimary && this.#loopManager.primaryId !== undefined) {
-      throw new Error(`Room "${this.id}" already has a primary agent`);
-    }
-    this.#loopManager.register(loop);
-    if (isPrimary) this.#loopManager.setPrimary(loop.id);
+    this.#register(loop);
   }
 
   get(agentId: string): AgentLoop | undefined {
@@ -136,6 +156,12 @@ export class Room {
 
   has(agentId: string): boolean {
     return this.#loopManager.has(agentId);
+  }
+
+  /** @internal Preflight Room-owned persistence before AgentLoop opens its native session. */
+  assertAgentLoopDirectoryAvailable(dir: string): void {
+    this.#assertOpen("create an agent");
+    this.#loopManager.assertDirectoryAvailable(dir);
   }
 
   list(): AgentLoop[] {
@@ -213,6 +239,24 @@ export class Room {
     }
   }
 
+  /** Disable one extension on an explicit loop, or the selected/primary loop. */
+  disable(extension: string, loopId?: string): Promise<void> {
+    try {
+      this.#assertOpen("disable an extension");
+      const registration = loopId === undefined
+        ? this.#loopManager.selectedRegistration ?? this.#loopManager.primaryRegistration
+        : this.#requireRegistration(loopId);
+      if (!registration) {
+        throw new Error(
+          `Cannot disable an extension in Room "${this.id}": no selected or primary agent is available`,
+        );
+      }
+      return registration.loop.disable(extension);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   reload(agentId?: string): Promise<void> {
     try {
       this.#assertOpen("reload agents");
@@ -228,6 +272,60 @@ export class Room {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  /** @internal Notify the registered Harness after Room teardown settles. */
+  onClosed(handler: (room: Room) => void): () => void {
+    this.#assertOpen("register a close handler");
+    this.#closedHandlers.add(handler);
+    return () => {
+      this.#closedHandlers.delete(handler);
+    };
+  }
+
+  /** Register a Room lifecycle listener. Reset keeps listeners alive through `room_reset_end`. */
+  on(event: "before_room_reset", handler: BeforeRoomResetHandler): () => void;
+  on(event: "room_reset_end", handler: RoomResetEndHandler): () => void;
+  on(
+    event: "before_room_reset" | "room_reset_end",
+    handler: BeforeRoomResetHandler | RoomResetEndHandler,
+  ): () => void {
+    if (this.#state !== "open" && this.#state !== "reloading") {
+      throw new Error(
+        `Cannot register a Room lifecycle handler while Room "${this.id}" is ${this.#state}`,
+      );
+    }
+    if (event === "before_room_reset") {
+      const typedHandler = handler as BeforeRoomResetHandler;
+      this.#beforeResetHandlers.add(typedHandler);
+      return () => {
+        this.#beforeResetHandlers.delete(typedHandler);
+      };
+    }
+
+    const typedHandler = handler as RoomResetEndHandler;
+    this.#resetEndHandlers.add(typedHandler);
+    return () => {
+      this.#resetEndHandlers.delete(typedHandler);
+    };
+  }
+
+  /** Destroy and archive all loops, then optionally create a fresh primary. */
+  async reset(options: ResetRoomOptions = {}): Promise<ResetRoomResult> {
+    this.#assertOpen("reset");
+    const sessionName = options.sessionName
+      ?? this.primary?.session.sessionManager.getSessionName();
+    this.#state = "resetting";
+
+    const archive = await this.#resetRuntime(sessionName);
+    if (options.primaryLoop === undefined) return { room: this, ...archive };
+    assertAgentIdentity(options.primaryLoop.agent);
+    if (options.primaryLoop.agent.tag.trim() !== PRIMARY_AGENT_TAG) {
+      throw new Error(`Primary AgentLoop must use tag "${PRIMARY_AGENT_TAG}"`);
+    }
+
+    const primaryLoop = await AgentLoop.create({ room: this, ...options.primaryLoop });
+    return { room: this, ...archive, primaryLoop };
   }
 
   destroy(agentId: string): Promise<void> {
@@ -248,10 +346,72 @@ export class Room {
     }
 
     this.#state = "closed";
+    this.#beforeResetHandlers.clear();
+    this.#resetEndHandlers.clear();
     const teardown = this.#loopManager.destroyAll();
     const operation = this.#closeRuntime(teardown);
     this.#closePromise = operation;
     return operation;
+  }
+
+  async #resetRuntime(sessionName: string | undefined): Promise<RoomArchiveResult> {
+    try {
+      await this.#emitBeforeReset();
+      try {
+        await this.#loopManager.destroyAll();
+      } catch (error) {
+        throw new Error(
+          `Room "${this.id}" failed to destroy all agents before reset archival`,
+          { cause: error },
+        );
+      }
+
+      const archiveName = archiveRoomSession(this.roomDir, sessionName);
+      for (const directoryName of ["attachments", "loops"]) {
+        await rm(join(this.roomDir, directoryName), { recursive: true, force: true });
+      }
+      await this.#emitResetEnd(archiveName);
+      return archiveName === undefined ? {} : { archiveName };
+    } finally {
+      if (this.#state === "resetting") this.#state = "open";
+    }
+  }
+
+  async #emitBeforeReset(): Promise<void> {
+    const event: BeforeRoomResetEvent = {
+      type: "before_room_reset",
+      roomId: this.id,
+      roomDir: this.roomDir,
+    };
+    for (const handler of [...this.#beforeResetHandlers]) {
+      try {
+        await handler(event);
+      } catch (error) {
+        MultiAgentPiHarness.instance.logger.warning(
+          `[${this.id}] before_room_reset handler failed`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
+
+  async #emitResetEnd(archiveName: string | undefined): Promise<void> {
+    const event: RoomResetEndEvent = {
+      type: "room_reset_end",
+      roomId: this.id,
+      roomDir: this.roomDir,
+      ...(archiveName === undefined ? {} : { archiveName }),
+    };
+    for (const handler of [...this.#resetEndHandlers]) {
+      try {
+        await handler(event);
+      } catch (error) {
+        MultiAgentPiHarness.instance.logger.warning(
+          `[${this.id}] room_reset_end handler failed`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
   }
 
   async #reloadRegistrations(registrations: readonly AgentRegistration[]): Promise<void> {
@@ -282,16 +442,40 @@ export class Room {
     } catch (error) {
       errors.push(error);
     }
-    try {
-      this.#runtime.onClosed(this);
-    } catch (error) {
-      errors.push(error);
+    for (const handler of [...this.#closedHandlers]) {
+      try {
+        handler(this);
+      } catch (error) {
+        errors.push(error);
+      }
     }
+    this.#closedHandlers.clear();
 
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) {
       throw new AggregateError(errors, `Failed to close Room "${this.id}" cleanly`);
     }
+  }
+
+  #register(loop: AgentLoop): void {
+    assertAgentIdentity(loop);
+    if (loop.roomId !== undefined && loop.roomId !== this.id) {
+      throw new Error(
+        `AgentLoop "${loop.id}" already belongs to Room "${loop.roomId}"`,
+      );
+    }
+    const isPrimary = loop.tag === PRIMARY_AGENT_TAG;
+    if (isPrimary && loop.dir !== this.roomDir) {
+      throw new Error(
+        `Room "${this.id}" primary agent directory must be "${this.roomDir}"`,
+      );
+    }
+    if (isPrimary && this.#loopManager.primaryId !== undefined) {
+      throw new Error(`Room "${this.id}" already has a primary agent`);
+    }
+    this.#loopManager.register(loop);
+    if (isPrimary) this.#loopManager.setPrimary(loop.id);
+    loop.setRoomId(this.id);
   }
 
   #requireRegistration(agentId: string): AgentRegistration {
@@ -310,12 +494,4 @@ export function createRoomId(id?: string): RoomId {
   const normalized = id.trim();
   if (!normalized) throw new Error("Room id must not be empty");
   return normalized as RoomId;
-}
-
-/** @internal Construct a fully initialized Room for MultiAgentPiHarness. */
-export function createRoomForHarness(
-  runtime: RoomRuntime,
-  options: CreateRoomOptions = {},
-): Room {
-  return Room.createForHarness(runtime, options);
 }

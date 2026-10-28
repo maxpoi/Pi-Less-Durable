@@ -74,13 +74,11 @@ export class LoopManager {
     if (this.#records.has(loop.id) || this.#destructions.has(loop.id)) {
       throw new Error(`Agent "${loop.id}" already exists`);
     }
-    const ownedRegistrations = [
-      ...this.#records.values(),
-      ...[...this.#destructions.values()].map(destruction => destruction.registration),
-    ];
+    const ownedRegistrations = this.#listOwnedRegistrations();
     if (ownedRegistrations.some(record => record.loop === loop || record.loop.session === loop.session)) {
       throw new Error("The same AgentLoop or AgentSession cannot be registered more than once");
     }
+    this.assertDirectoryAvailable(loop.dir);
     const registration: AgentRegistration = {
       id: loop.id,
       name: loop.name,
@@ -89,6 +87,16 @@ export class LoopManager {
     };
     this.#records.set(loop.id, registration);
     return registration;
+  }
+
+  assertDirectoryAvailable(dir: string): void {
+    const directoryOwner = this.#listOwnedRegistrations()
+      .find(record => record.loop.dir === dir);
+    if (directoryOwner !== undefined) {
+      throw new Error(
+        `AgentLoop directory "${dir}" is already owned by agent "${directoryOwner.id}"`,
+      );
+    }
   }
 
   get(id: string): AgentLoop | undefined {
@@ -191,6 +199,13 @@ export class LoopManager {
     if (errors.length > 1) {
       throw new AggregateError(errors, "One or more agent loops failed to shut down cleanly");
     }
+  }
+
+  #listOwnedRegistrations(): AgentRegistration[] {
+    return [
+      ...this.#records.values(),
+      ...[...this.#destructions.values()].map(destruction => destruction.registration),
+    ];
   }
 
   #prepareSelectionForDestroy(registration: AgentRegistration): void {

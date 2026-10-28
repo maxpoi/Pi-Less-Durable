@@ -4,6 +4,7 @@ import {
   ModelRuntime,
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
+  Room,
 } from "pi-less-durable";
 import { BotConfigStore } from "./config-store.js";
 import { logger } from "./logger.js";
@@ -29,7 +30,6 @@ async function runBot(): Promise<void> {
     logger,
   });
 
-  await harness.open();
   try {
     const provider = harness.settings.getDefaultProvider();
     const modelId = harness.settings.getDefaultModel();
@@ -49,25 +49,28 @@ async function runBot(): Promise<void> {
       return;
     }
 
-    const room = harness.createRoom();
     const mainIdentity = {
       id: "main",
       name: "Main",
       tag: PRIMARY_AGENT_TAG,
     };
-    const main = await harness.createAgentLoop(room, mainIdentity, { cwd: process.cwd() });
-    room.register(main);
-
-    await room.prompt("Hello");
-  } finally {
+    const { room } = await Room.create({
+      primaryLoop: {
+        agent: mainIdentity,
+        config: { cwd: process.cwd() },
+      },
+    });
     try {
-      await harness.close();
+      harness.register(room);
+      await room.prompt("Hello");
     } finally {
-      configStore.save({
-        ...harness.config,
-        limitedMode,
-      });
+      await room.close();
     }
+  } finally {
+    configStore.save({
+      ...harness.config,
+      limitedMode,
+    });
   }
 }
 

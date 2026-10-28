@@ -1,3 +1,4 @@
+import { basename, dirname, extname } from "node:path";
 import {
   createCodemodeExtension,
   type AgentSession,
@@ -11,21 +12,55 @@ import {
   type CodexServerCompactionController,
 } from "../compaction/codex-server-compaction.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
-import { setupCompactionStripExtension } from "./compaction-strip/extension.js";
 import type { AgentLogger } from "../logger/logger.js";
+import type { AgentIdentity } from "../room/loop-manager.js";
+import bashTimeoutGuardExtension from "./bash-timeout-guard/extension.js";
+import { setupCompactionStripExtension } from "./compaction-strip/extension.js";
+import { createGitGuardExtension } from "./git-guard/extension.js";
+import permissionGateExtension from "./permission-gate/extension.js";
+import protectedPathsExtension from "./protected-paths/extension.js";
 
 export interface CreateBuiltInExtensionsOptions {
-  readonly roomId: string;
-  readonly agentId: string;
+  readonly agent: AgentIdentity;
   readonly sessionManager: SessionManager;
   readonly modelRuntime: ModelRuntime;
   readonly settingsManager: MultiAgentPiSettingsManager;
   readonly logger: AgentLogger;
+  readonly disabledExtensions: ReadonlySet<string>;
 }
 
 export const FRAMEWORK_EXTENSION_NAME_PREFIX = "multi-agent-pi-";
+export const CODEMODE_EXTENSION_NAME = "codemode";
+export const CODEX_SERVER_COMPACTION_EXTENSION_NAME = "codex-server-compaction";
 
-const CODEMODE_TOOL_NAME = "codemode";
+/** Match public disable names against framework inline and consumer source paths. */
+export function isExtensionDisabled(
+  path: string,
+  disabledExtensions: ReadonlySet<string>,
+): boolean {
+  const inlinePrefix = "<inline:";
+  if (path.startsWith(inlinePrefix) && path.endsWith(">")) {
+    const inlineName = path.slice(inlinePrefix.length, -1);
+    if (
+      inlineName === `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEMODE_EXTENSION_NAME}`
+      || inlineName.startsWith(
+        `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEX_SERVER_COMPACTION_EXTENSION_NAME}-`,
+      )
+    ) {
+      return false;
+    }
+    const publicName = inlineName.startsWith(FRAMEWORK_EXTENSION_NAME_PREFIX)
+      ? inlineName.slice(FRAMEWORK_EXTENSION_NAME_PREFIX.length)
+      : inlineName;
+    return disabledExtensions.has(publicName);
+  }
+
+  const fileName = basename(path);
+  const sourceName = fileName.slice(0, fileName.length - extname(fileName).length);
+  const directoryName = basename(dirname(path));
+  if (sourceName === "index") return disabledExtensions.has(directoryName);
+  return disabledExtensions.has(directoryName) || disabledExtensions.has(sourceName);
+}
 
 interface NamedInlineExtension {
   readonly name: string;
@@ -36,8 +71,24 @@ interface NamedInlineExtension {
 export interface BuiltInExtensions {
   readonly codemodeExtension: NamedInlineExtension;
   readonly compactionStripExtension: NamedInlineExtension;
+  readonly defaultExtensions: readonly NamedInlineExtension[];
   readonly codexServerCompactionExtension: NamedInlineExtension;
   readonly codexServerCompaction: CodexServerCompactionController;
+}
+
+function createDisableableExtension(
+  name: string,
+  factory: ExtensionFactory,
+  disabledExtensions: ReadonlySet<string>,
+): NamedInlineExtension {
+  return {
+    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}${name}`,
+    hidden: true,
+    factory: pi => {
+      if (disabledExtensions.has(name)) return;
+      return factory(pi);
+    },
+  };
 }
 
 /** Create the private native extensions installed in every Harness AgentSession. */
@@ -45,12 +96,12 @@ export function createBuiltInExtensions(
   options: CreateBuiltInExtensionsOptions,
 ): BuiltInExtensions {
   const {
-    roomId,
-    agentId,
+    agent,
     sessionManager,
     modelRuntime,
     settingsManager,
     logger,
+    disabledExtensions,
   } = options;
   const codexServerCompaction = createCodexServerCompactionController({
     sessionManager,
@@ -62,17 +113,39 @@ export function createBuiltInExtensions(
     },
   });
   const codemodeExtension: NamedInlineExtension = {
-    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}codemode`,
+    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEMODE_EXTENSION_NAME}`,
     hidden: true,
     factory: createCodemodeExtension(),
   };
-  const compactionStripExtension: NamedInlineExtension = {
-    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}compaction-strip`,
-    hidden: true,
-    factory: pi => setupCompactionStripExtension(pi, logger),
-  };
+  const compactionStripExtension = createDisableableExtension(
+    "compaction-strip",
+    pi => setupCompactionStripExtension(pi, logger),
+    disabledExtensions,
+  );
+  const defaultExtensions: readonly NamedInlineExtension[] = Object.freeze([
+    createDisableableExtension(
+      "bash-timeout-guard",
+      bashTimeoutGuardExtension,
+      disabledExtensions,
+    ),
+    createDisableableExtension(
+      "git-guard",
+      createGitGuardExtension(settingsManager),
+      disabledExtensions,
+    ),
+    createDisableableExtension(
+      "permission-gate",
+      permissionGateExtension,
+      disabledExtensions,
+    ),
+    createDisableableExtension(
+      "protected-paths",
+      protectedPathsExtension,
+      disabledExtensions,
+    ),
+  ]);
   const codexServerCompactionExtension: NamedInlineExtension = {
-    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}codex-server-compaction-${roomId}-${agentId}`,
+    name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEX_SERVER_COMPACTION_EXTENSION_NAME}-${agent.id}`,
     hidden: true,
     factory: pi => codexServerCompaction.register(pi),
   };
@@ -80,6 +153,7 @@ export function createBuiltInExtensions(
   return {
     codemodeExtension,
     compactionStripExtension,
+    defaultExtensions,
     codexServerCompactionExtension,
     codexServerCompaction,
   };
@@ -102,8 +176,8 @@ export function assertConsumerInlineExtensionNames(
 
 /** Activate the framework-provided Codemode tool without owning a Pi event handler. */
 export function activateCodemode(session: AgentSession): void {
-  if (!session.getAllTools().some(tool => tool.name === CODEMODE_TOOL_NAME)) return;
+  if (!session.getAllTools().some(tool => tool.name === CODEMODE_EXTENSION_NAME)) return;
   const activeTools = session.getActiveToolNames();
-  if (activeTools.includes(CODEMODE_TOOL_NAME)) return;
-  session.setActiveToolsByName([...activeTools, CODEMODE_TOOL_NAME]);
+  if (activeTools.includes(CODEMODE_EXTENSION_NAME)) return;
+  session.setActiveToolsByName([...activeTools, CODEMODE_EXTENSION_NAME]);
 }

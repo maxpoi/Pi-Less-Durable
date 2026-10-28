@@ -31,6 +31,7 @@ export {
   AgentLoop,
   type AgentLoopLifecycleKind,
   type AgentLoopState,
+  type CreateAgentLoopOptions,
 } from "./agent/agent-loop.js";
 export type {
   AgentConfig,
@@ -73,7 +74,6 @@ export {
 export {
   MultiAgentPiHarness,
   type MultiAgentPiHarnessOptions,
-  type MultiAgentPiHarnessState,
   type ReloadMultiAgentPiHarnessOptions,
 } from "./multi-agent-pi-harness.js";
 export {
@@ -90,8 +90,16 @@ export {
 export {
   Room,
   createRoomId,
+  type BeforeRoomResetEvent,
+  type BeforeRoomResetHandler,
   type CreateRoomOptions,
+  type CreateRoomResult,
+  type PrimaryAgentLoopOptions,
+  type ResetRoomOptions,
+  type ResetRoomResult,
   type RoomId,
   type RoomPromptOptions,
+  type RoomResetEndEvent,
+  type RoomResetEndHandler,
   type RoomState,
 } from "./room/room.js";

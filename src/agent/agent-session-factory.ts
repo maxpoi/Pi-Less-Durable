@@ -8,22 +8,24 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
-  type ExtensionRunner,
-  SessionManager,
-  convertToLlm,
   type CreateAgentSessionResult,
+  type ExtensionRunner,
   type InlineExtension,
   type ModelRuntime,
+  SessionManager,
   type SettingsManager,
+  convertToLlm,
 } from "@earendil-works/pi-coding-agent";
-import { AgentLoop } from "./agent-loop.js";
+import { AgentLoop, type CreateAgentLoopOptions } from "./agent-loop.js";
 import {
   initializeConversationHistory,
   type ConversationHistory,
 } from "./agent-session-utils.js";
 import {
+  FRAMEWORK_EXTENSION_NAME_PREFIX,
   assertConsumerInlineExtensionNames,
   createBuiltInExtensions,
+  isExtensionDisabled,
 } from "../extensions/built-in-extensions.js";
 import { prepareInitialSessionMessages } from "./runtime-maintainance/context-maintenance.js";
 import {
@@ -35,11 +37,16 @@ import type { AgentLogger } from "../logger/logger.js";
 import type { CodexServerCompactionController } from "../compaction/codex-server-compaction.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
 import { MultiAgentPiResourceLoader } from "../extensions/multi-agent-pi-extension-registry.js";
+import { MultiAgentPiHarness } from "../multi-agent-pi-harness.js";
+import {
+  resolveExplicitPersistenceDirectory,
+  resolvePersistenceDirectory,
+} from "../path-validation.js";
 import {
   PRIMARY_AGENT_TAG,
+  assertAgentIdentity,
   type AgentIdentity,
 } from "../room/loop-manager.js";
-import type { Room } from "../room/room.js";
 
 
 /** Consumer-applied configuration for constructing one agent runtime. */
@@ -55,21 +62,6 @@ export interface AgentConfig {
 export interface AgentLoopExtensionSources {
   readonly extensionFiles?: readonly string[];
   readonly inlineExtensions?: readonly InlineExtension[];
-}
-
-export interface CreateHarnessAgentSessionOptions {
-  readonly room: Room;
-  readonly agent: AgentIdentity;
-  readonly config: AgentConfig;
-  readonly extensionSources: AgentLoopExtensionSources;
-  readonly workingDir: string;
-  readonly modelRuntime: ModelRuntime;
-  readonly settingsManager: MultiAgentPiSettingsManager;
-  readonly logger: AgentLogger;
-}
-
-export interface CreateHarnessAgentLoopResult extends CreateAgentSessionResult {
-  readonly loop: AgentLoop;
 }
 
 interface CreateNativeAgentSessionOptions {
@@ -90,7 +82,7 @@ interface CreateNativeAgentSessionOptions {
  * internal CacheWarmer, or merge Pi provider-attribution headers. Those SDK behaviors are not
  * part of the Harness contract. An unresolved model remains undefined for the consumer to fix.
  */
-function createAgentSession(options: CreateNativeAgentSessionOptions): CreateAgentSessionResult {
+function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateAgentSessionResult {
   const {
     cwd,
     config,
@@ -208,28 +200,61 @@ function createAgentSession(options: CreateNativeAgentSessionOptions): CreateAge
   };
 }
 
-/** Materialize one native Pi AgentSession from Harness-owned resources. */
-export async function createHarnessAgentSession(
-  options: CreateHarnessAgentSessionOptions,
-): Promise<CreateHarnessAgentLoopResult> {
-  const {
-    room,
-    agent,
-    config,
-    extensionSources,
-    workingDir,
-    modelRuntime,
-    settingsManager,
-    logger,
-  } = options;
-  const isPrimary = agent.tag.trim() === PRIMARY_AGENT_TAG;
+/** @internal Implement AgentLoop.create() through resources owned by the process singleton Harness. */
+export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<AgentLoop> {
+  const hasDir = typeof options.dir === "string";
+  const hasRoom = options.room !== undefined;
+  if (hasDir === hasRoom) {
+    throw new Error("AgentLoop.create() requires exactly one of dir or room");
+  }
+  assertAgentIdentity(options.agent);
+  if (!options.config || typeof options.config.cwd !== "string" || !options.config.cwd.trim()) {
+    throw new Error(`AgentLoop "${options.agent.id}" requires an explicit cwd`);
+  }
+
+  const harness = MultiAgentPiHarness.instance;
+  if (hasRoom) {
+    const room = options.room!;
+    harness.assertRoomAdmissionAvailable(room);
+    if (room.has(options.agent.id)) {
+      throw new Error(`Agent "${options.agent.id}" already exists in Room "${room.id}"`);
+    }
+    if (options.agent.tag.trim() === PRIMARY_AGENT_TAG && room.primaryId !== undefined) {
+      throw new Error(`Room "${room.id}" already has a primary agent`);
+    }
+  } else if (harness.isReloading) {
+    throw new Error("Cannot create an AgentLoop while the Harness is reloading");
+  }
+
+  const dir = hasDir
+    ? options.dir!
+    : options.agent.tag.trim() === PRIMARY_AGENT_TAG
+      ? options.room!.roomDir
+      : resolve(options.room!.roomDir, "loops", options.agent.id);
+
+  const agent = options.agent;
+  const config: AgentConfig = {
+    ...options.config,
+    cwd: resolve(options.config.cwd),
+  };
+  const extensionFiles = [...new Set(
+    (options.extensionSources?.extensionFiles ?? []).map(extensionPath =>
+      resolve(process.cwd(), extensionPath)
+    ),
+  )];
+  const inlineExtensions = [...(options.extensionSources?.inlineExtensions ?? [])];
+  const harnessExtensionFiles = harness.extensionFiles;
+  const workingDir = harness.workingDir;
+  const modelRuntime = harness.modelRuntime;
+  const settingsManager = harness.settings;
+  const logger = harness.logger;
   const cwd = config.cwd;
-  const extensionFiles = extensionSources.extensionFiles ?? [];
-  const inlineExtensions = extensionSources.inlineExtensions ?? [];
+  const disabledExtensions = new Set<string>();
   assertConsumerInlineExtensionNames(inlineExtensions);
-  const loopDir = isPrimary
-    ? room.roomDir
-    : resolve(room.roomDir, "loops", agent.id);
+  const loopDir = hasDir
+    ? resolveExplicitPersistenceDirectory(dir, "AgentLoop persistence directory")
+    : resolvePersistenceDirectory(dir);
+  if (hasRoom) options.room!.assertAgentLoopDirectoryAvailable(loopDir);
   const contextFile = join(loopDir, "context.jsonl");
   if (config.initialConversationHistory) {
     initializeConversationHistory({
@@ -239,7 +264,8 @@ export async function createHarnessAgentSession(
     });
   }
   const sessionManager = SessionManager.open(contextFile, loopDir, cwd);
-  const logTag = `${room.id}/${agent.id}`;
+  const logTag = hasRoom ? `${options.room!.id}/${agent.tag.trim()}` : agent.tag.trim();
+  const piSettingsManager = settingsManager as unknown as SettingsManager;
   const { messages: initialMessages, restoredMessageCount } = prepareInitialSessionMessages(
     sessionManager,
     logger,
@@ -247,54 +273,74 @@ export async function createHarnessAgentSession(
   if (restoredMessageCount > 0) {
     logger.info(`[${logTag}] Loaded ${restoredMessageCount} messages from context.jsonl`);
   }
+
   const {
     codemodeExtension,
     compactionStripExtension,
+    defaultExtensions,
     codexServerCompactionExtension,
     codexServerCompaction,
   } = createBuiltInExtensions({
-    roomId: room.id,
-    agentId: agent.id,
+    agent,
     sessionManager,
     modelRuntime,
     settingsManager,
     logger,
+    disabledExtensions,
   });
   const codemodePath = `<inline:${codemodeExtension.name}>`;
   const compactionStripPath = `<inline:${compactionStripExtension.name}>`;
+  const defaultExtensionPaths = new Set(
+    defaultExtensions.map(extension => `<inline:${extension.name}>`),
+  );
   const codexServerCompactionPath = `<inline:${codexServerCompactionExtension.name}>`;
   const resourceLoader = new MultiAgentPiResourceLoader(
     {
       cwd,
       agentDir: workingDir,
-      settingsManager: settingsManager as unknown as SettingsManager,
+      settingsManager: piSettingsManager,
       additionalExtensionPaths: [...extensionFiles],
       extensionFactories: [
         ...inlineExtensions,
         codemodeExtension,
         compactionStripExtension,
+        ...defaultExtensions,
         codexServerCompactionExtension,
       ],
       extensionsOverride: result => {
-        const loadedCodemode = result.extensions.find(extension => extension.path === codemodePath);
-        const loadedCompactionStrip = result.extensions.find(
-          extension => extension.path === compactionStripPath,
+        const loadedCodemode = result.extensions.find(
+          extension => extension.path === codemodePath,
         );
+        const loadedCompactionStrip = disabledExtensions.has("compaction-strip")
+          ? undefined
+          : result.extensions.find(extension => extension.path === compactionStripPath);
+        const loadedDefaultExtensions = defaultExtensions.flatMap(defaultExtension => {
+          const path = `<inline:${defaultExtension.name}>`;
+          const publicName = defaultExtension.name.slice(FRAMEWORK_EXTENSION_NAME_PREFIX.length);
+          if (disabledExtensions.has(publicName)) return [];
+          const loaded = result.extensions.find(extension => extension.path === path);
+          return loaded === undefined ? [] : [loaded];
+        });
         const loadedCodexServerCompaction = result.extensions.find(
           extension => extension.path === codexServerCompactionPath,
         );
         const consumers = result.extensions.filter(extension =>
-          extension !== loadedCodemode
-          && extension !== loadedCompactionStrip
-          && extension !== loadedCodexServerCompaction
+          extension.path !== codemodePath
+          && extension.path !== compactionStripPath
+          && !defaultExtensionPaths.has(extension.path)
+          && extension.path !== codexServerCompactionPath
+          && !isExtensionDisabled(extension.path, disabledExtensions)
         );
         return {
           ...result,
           extensions: [
             ...(loadedCodemode === undefined ? [] : [loadedCodemode]),
             ...(loadedCompactionStrip === undefined ? [] : [loadedCompactionStrip]),
+            ...loadedDefaultExtensions,
             ...consumers,
-            ...(loadedCodexServerCompaction === undefined ? [] : [loadedCodexServerCompaction]),
+            ...(loadedCodexServerCompaction === undefined
+              ? []
+              : [loadedCodexServerCompaction]),
           ],
         };
       },
@@ -306,15 +352,16 @@ export async function createHarnessAgentSession(
       systemPrompt: "",
     },
     {
-      roomId: room.id,
+      ...(hasRoom ? { roomId: options.room!.id } : {}),
       id: agent.id,
       tag: agent.tag.trim(),
       logger,
     },
+    harnessExtensionFiles,
   );
   await resourceLoader.reload();
 
-  const result = createAgentSession({
+  const result = createPiAgentSession({
     cwd,
     config,
     initialMessages,
@@ -330,30 +377,29 @@ export async function createHarnessAgentSession(
       result.modelFallbackMessage ?? "No model was resolved for this agent session",
     );
   }
-  const loop = AgentLoop.createForHarness({
+
+  const loop = await AgentLoop.bindSession({
+    dir: loopDir,
     identity: agent,
     session: result.session,
     settingsManager,
     logger,
-    logTag,
+    disabledExtensions,
   });
+  if (!hasRoom) return loop;
+
   try {
-    await result.session.bindExtensions({
-      onError: error => logger.warning(
-        "Pi extension error",
-        `${error.extensionPath}: ${error.error}`,
-      ),
-    });
+    options.room!.register(loop);
+    return loop;
   } catch (error) {
     try {
       await loop.destroy();
-    } catch (destroyError) {
-      logger.warning(
-        `[${logTag}] Failed to clean up after extension binding failed`,
-        destroyError instanceof Error ? destroyError.message : String(destroyError),
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `Room "${options.room!.id}" failed to discard agent "${loop.id}" cleanly`,
       );
     }
     throw error;
   }
-  return { ...result, loop };
 }
