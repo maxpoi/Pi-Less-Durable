@@ -2,19 +2,22 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import {
+  AgentLoop,
   DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
   DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
   ModelRuntime,
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
+  Room,
   multiAgentPi,
 } from "../dist/index.js";
 
 const COMPACTION_EVENT = "session_before_compact";
 const CONFIG = {
   compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  guardWorktree: true,
   model: "gpt-5.6-sol",
   provider: "openai-codex",
   retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
@@ -25,46 +28,60 @@ function registerCompactionObserver(pi) {
   pi.on(COMPACTION_EVENT, () => undefined);
 }
 
-test("consumer inline extensions cannot use framework-reserved names", async t => {
-  const workingDir = mkdtempSync(join(tmpdir(), "pld-reserved-extension-name-"));
+const workingDir = mkdtempSync(join(tmpdir(), "pld-extension-targeting-"));
+const warnings = [];
+let harness;
+
+before(async () => {
   const modelRuntime = await ModelRuntime.create({
     authPath: join(workingDir, "auth.json"),
     modelsPath: join(workingDir, "models.json"),
   });
-  const harness = new MultiAgentPiHarness({
+  harness = new MultiAgentPiHarness({
     config: CONFIG,
     workingDir,
     modelRuntime,
-    logger: { info() {}, warning() {} },
+    logger: {
+      info() {},
+      warning(message, details) {
+        warnings.push(`${message}: ${details}`);
+      },
+    },
   });
-  t.after(async () => {
-    try {
-      await harness.close();
-    } finally {
-      rmSync(workingDir, { recursive: true, force: true });
-    }
-  });
+});
 
-  await harness.open();
-  const room = harness.createRoom({ id: "reserved-extension-name" });
+after(async () => {
+  try {
+    await Promise.all(harness?.listRooms().map(room => room.close()) ?? []);
+  } finally {
+    rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test("consumer inline extensions cannot use framework-reserved names", async () => {
+  const { room } = await Room.create({
+    id: "reserved-extension-name",
+    roomDir: join(workingDir, "rooms", "reserved-extension-name"),
+  });
+  harness.register(room);
   await assert.rejects(
-    harness.createAgentLoop(
+    AgentLoop.create({
       room,
-      { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-      { cwd: process.cwd() },
-      {
+      agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
+      config: { cwd: process.cwd() },
+      extensionSources: {
         inlineExtensions: [{
           name: "multi-agent-pi-compaction-strip",
           factory() {},
         }],
       },
-    ),
+    }),
     /Consumer inline extension name "multi-agent-pi-compaction-strip" is reserved/,
   );
 });
 
-test("failed extension sources discard their local targeted registrations", async t => {
-  const workingDir = mkdtempSync(join(tmpdir(), "pld-targeted-transaction-"));
+test("failed extension sources discard their local targeted registrations", async () => {
+  warnings.length = 0;
   const failedFileExtension = join(workingDir, "failed-targeted-source.mjs");
   writeFileSync(
     failedFileExtension,
@@ -76,11 +93,6 @@ test("failed extension sources discard their local targeted registrations", asyn
       + "  throw new Error('file source initialization failed');\n"
       + "}\n",
   );
-  const warnings = [];
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(workingDir, "auth.json"),
-    modelsPath: join(workingDir, "models.json"),
-  });
   const extensionSources = {
     extensionFiles: [failedFileExtension],
     inlineExtensions: [
@@ -100,48 +112,30 @@ test("failed extension sources discard their local targeted registrations", asyn
         factory(pi) {
           return multiAgentPi.register(pi, {
             id: "keep-me",
-            target: { roomId: "targeted-transaction", id: "child" },
+            target: { id: "child" },
             setup: registerCompactionObserver,
           });
         },
       },
     ],
   };
-  const harness = new MultiAgentPiHarness({
-    config: CONFIG,
-    workingDir,
-    modelRuntime,
-    logger: {
-      info() {},
-      warning(message, details) {
-        warnings.push(`${message}: ${details}`);
-      },
-    },
+  const { room } = await Room.create({
+    id: "targeted-transaction",
+    roomDir: join(workingDir, "rooms", "targeted-transaction"),
   });
-  t.after(async () => {
-    try {
-      await harness.close();
-    } finally {
-      rmSync(workingDir, { recursive: true, force: true });
-    }
+  harness.register(room);
+  const main = await AgentLoop.create({
+    room,
+    agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
+    config: { cwd: process.cwd() },
+    extensionSources,
   });
-
-  await harness.open();
-  const room = harness.createRoom({ id: "targeted-transaction" });
-  const main = await harness.createAgentLoop(
+  const child = await AgentLoop.create({
     room,
-    { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-    { cwd: process.cwd() },
+    agent: { id: "child", name: "Child", tag: "worker" },
+    config: { cwd: process.cwd() },
     extensionSources,
-  );
-  room.register(main);
-  const child = await harness.createAgentLoop(
-    room,
-    { id: "child", name: "Child", tag: "worker" },
-    { cwd: process.cwd() },
-    extensionSources,
-  );
-  room.register(child);
+  });
 
   for (const loop of [main, child]) {
     const extensions = loop.session.resourceLoader.getExtensions().extensions;
@@ -165,13 +159,8 @@ test("failed extension sources discard their local targeted registrations", asyn
   assert.ok(warnings.some(warning => warning.includes("inline source initialization failed")));
 });
 
-test("targeted setup failure discards its native source with an exact diagnostic", async t => {
-  const workingDir = mkdtempSync(join(tmpdir(), "pld-targeted-setup-failure-"));
-  const warnings = [];
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(workingDir, "auth.json"),
-    modelsPath: join(workingDir, "models.json"),
-  });
+test("targeted setup failure discards its native source with an exact diagnostic", async () => {
+  warnings.length = 0;
   const extensionSources = {
     inlineExtensions: [{
       name: "targeted-setup-failure",
@@ -191,34 +180,17 @@ test("targeted setup failure discards its native source with an exact diagnostic
       },
     }],
   };
-  const harness = new MultiAgentPiHarness({
-    config: CONFIG,
-    workingDir,
-    modelRuntime,
-    logger: {
-      info() {},
-      warning(message, details) {
-        warnings.push(`${message}: ${details}`);
-      },
-    },
+  const { room } = await Room.create({
+    id: "targeted-setup-failure",
+    roomDir: join(workingDir, "rooms", "targeted-setup-failure"),
   });
-  t.after(async () => {
-    try {
-      await harness.close();
-    } finally {
-      rmSync(workingDir, { recursive: true, force: true });
-    }
-  });
-
-  await harness.open();
-  const room = harness.createRoom({ id: "targeted-setup-failure" });
-  const main = await harness.createAgentLoop(
+  harness.register(room);
+  const main = await AgentLoop.create({
     room,
-    { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-    { cwd: process.cwd() },
+    agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
+    config: { cwd: process.cwd() },
     extensionSources,
-  );
-  room.register(main);
+  });
 
   const extensions = main.session.resourceLoader.getExtensions();
   assert.equal(

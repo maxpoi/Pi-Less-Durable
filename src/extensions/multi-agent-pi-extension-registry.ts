@@ -9,8 +9,8 @@ import { assertAgentId } from "../room/loop-manager.js";
 import type { RoomId } from "../room/room-types.js";
 
 export type MultiAgentPiExtensionTarget =
-  | { readonly tag: string }
-  | { readonly id: string; readonly roomId?: string };
+  | { readonly id: string }
+  | { readonly tag: string };
 
 export interface MultiAgentPiExtensionRegistration {
   /** Diagnostic label reported when targeted setup fails. */
@@ -31,7 +31,7 @@ export interface MultiAgentPiExtensionAPI {
 }
 
 export interface MultiAgentPiResourceLoaderContext {
-  readonly roomId: RoomId;
+  roomId?: RoomId;
   readonly id: string;
   readonly tag: string;
   readonly logger: AgentLogger;
@@ -42,18 +42,46 @@ const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiResourceLoaderCon
 /** Pi ResourceLoader that scopes native extension loading to one AgentLoop identity. */
 export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   readonly #context: MultiAgentPiResourceLoaderContext;
+  readonly #harnessExtensionPaths: readonly string[];
+  readonly #loopExtensionPaths: readonly string[];
+  readonly #appliedPiExtensionPaths: string[];
 
   constructor(
     options: ConstructorParameters<typeof DefaultResourceLoader>[0],
     context: MultiAgentPiResourceLoaderContext,
+    harnessExtensionPaths: readonly string[] = [],
   ) {
-    super(options);
+    const loopExtensionPaths = [...(options.additionalExtensionPaths ?? [])];
+    // Pi 1.1.0 retains this constructor array and resolves its current contents on every reload.
+    const appliedPiExtensionPaths: string[] = [];
+    super({ ...options, additionalExtensionPaths: appliedPiExtensionPaths });
     this.#context = context;
+    this.#harnessExtensionPaths = harnessExtensionPaths;
+    this.#loopExtensionPaths = loopExtensionPaths;
+    this.#appliedPiExtensionPaths = appliedPiExtensionPaths;
+  }
+
+  get roomId(): RoomId | undefined {
+    return this.#context.roomId;
+  }
+
+  setRoomId(roomId: RoomId): void {
+    this.#context.roomId = roomId;
   }
 
   override async reload(
     options?: Parameters<DefaultResourceLoader["reload"]>[0],
   ): Promise<void> {
+    const extensionPaths = [...new Set([
+      ...this.#harnessExtensionPaths,
+      ...this.#loopExtensionPaths,
+    ])];
+    this.#appliedPiExtensionPaths.splice(
+      0,
+      this.#appliedPiExtensionPaths.length,
+      ...extensionPaths,
+    );
+
     const { logger } = this.#context;
     await extensionLoadContext.run(this.#context, () => super.reload(options));
 
@@ -96,24 +124,23 @@ function assertRegistration(
   }
   if (!registration.target || typeof registration.target !== "object") {
     throw new Error(
-      `MultiAgentPi extension "${registration.id}" requires target { tag }, { id }, or { roomId, id }`,
+      `MultiAgentPi extension "${registration.id}" requires target { id } or { tag }`,
     );
   }
 
   const target = registration.target;
-  const hasTag = "tag" in target;
-  const hasId = "id" in target;
-  const hasRoomId = "roomId" in target;
-  if (hasTag) {
-    if (hasId || hasRoomId || typeof target.tag !== "string" || !target.tag.trim()) {
-      throw new Error("MultiAgentPi extension tag target requires only one non-empty tag");
-    }
+  const keys = Object.keys(target);
+  if (keys.length !== 1 || !["id", "tag"].includes(keys[0]!)) {
+    throw new Error(
+      "MultiAgentPi extension target requires exactly one of { id } or { tag }",
+    );
+  }
+  if ("id" in target) {
+    assertAgentId(target.id);
     return;
   }
-  if (!hasId) throw new Error("MultiAgentPi exact target requires an id");
-  assertAgentId(target.id);
-  if (hasRoomId && (typeof target.roomId !== "string" || !target.roomId.trim())) {
-    throw new Error("MultiAgentPi exact target Room id must not be empty");
+  if (typeof target.tag !== "string" || !target.tag.trim()) {
+    throw new Error("MultiAgentPi extension tag target requires a non-empty tag");
   }
 }
 
@@ -121,9 +148,8 @@ function matches(
   target: MultiAgentPiExtensionTarget,
   context: MultiAgentPiResourceLoaderContext,
 ): boolean {
-  if ("tag" in target) return target.tag.trim() === context.tag;
-  if (target.id !== context.id) return false;
-  return target.roomId === undefined || target.roomId.trim() === context.roomId;
+  if ("id" in target) return target.id === context.id;
+  return target.tag.trim() === context.tag;
 }
 
 function createTargetedSetupError(
@@ -132,9 +158,11 @@ function createTargetedSetupError(
   error: unknown,
 ): Error {
   const details = error instanceof Error ? error.message : String(error);
+  const owner = context.roomId === undefined
+    ? `AgentLoop "${context.id}"`
+    : `Room "${context.roomId}", AgentLoop "${context.id}"`;
   return new Error(
-    `Targeted extension "${registrationId}" failed for Room "${context.roomId}", `
-      + `AgentLoop "${context.id}": ${details}`,
+    `Targeted extension "${registrationId}" failed for ${owner}: ${details}`,
     { cause: error },
   );
 }

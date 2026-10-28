@@ -38,6 +38,8 @@ export const DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS: MultiAgentPiRetrySettings = 
 /** Complete host-supplied in-memory configuration. */
 export interface MultiAgentPiConfig {
   readonly compaction: MultiAgentPiCompactionSettings;
+  /** Block git worktree commands in the framework git guard. */
+  readonly guardWorktree: boolean;
   readonly model: string;
   readonly provider: KnownProvider;
   readonly retry: MultiAgentPiRetrySettings;

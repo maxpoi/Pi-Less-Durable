@@ -5,11 +5,13 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  AgentLoop,
   DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
   DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
   ModelRuntime,
   MultiAgentPiHarness,
   PRIMARY_AGENT_TAG,
+  Room,
   multiAgentPi,
 } from "../dist/index.js";
 
@@ -19,6 +21,7 @@ const INLINE_EXTENSION_PATH = "<inline:test-inline-compaction-observer>";
 const CUSTOM_EXTENSION_PATH = "<inline:test-custom-compaction-observer>";
 const CONFIG = {
   compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
+  guardWorktree: true,
   model: "gpt-5.6-sol",
   provider: "openai-codex",
   retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,
@@ -124,27 +127,28 @@ test("compaction strip runs first in every factory-created loop on initializatio
   });
   t.after(async () => {
     try {
-      await harness.close();
+      await Promise.all(harness.listRooms().map(room => room.close()));
     } finally {
       rmSync(workingDir, { recursive: true, force: true });
     }
   });
-
-  await harness.open();
-  const room = harness.createRoom({ id: "compaction-order" });
-  const main = await harness.createAgentLoop(
+  const { room } = await Room.create({
+    id: "compaction-order",
+    roomDir: join(workingDir, "rooms", "compaction-order"),
+  });
+  harness.register(room);
+  const main = await AgentLoop.create({
     room,
-    { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-    { cwd: process.cwd() },
+    agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
+    config: { cwd: process.cwd() },
     extensionSources,
-  );
-  room.register(main);
-  const child = await harness.createAgentLoop(
-    room,
-    { id: "child", name: "Child", tag: "worker" },
-    { cwd: process.cwd() },
+  });
+  const child = await AgentLoop.create({
+    dir: join(room.roomDir, "loops", "child"),
+    agent: { id: "child", name: "Child", tag: "worker" },
+    config: { cwd: process.cwd() },
     extensionSources,
-  );
+  });
   room.register(child);
 
   const consumers = new Map([

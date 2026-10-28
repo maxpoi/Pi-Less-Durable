@@ -41,6 +41,7 @@ Do not read every document by default. Cross-references are navigation aids, not
 ## Topic map
 
 - `extensions.md` — extension materialization and deterministic runtime ordering
+- `primitives.md` — Harness, Room, LoopManager, and AgentLoop ownership and lifecycle
 
 ## Maintenance rules
 
