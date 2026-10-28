@@ -26,6 +26,7 @@ import {
   type AgentConfig,
   type AgentLoopExtensionSources,
 } from "./agent-session-factory.js";
+import type { AgentSystemPrompt } from "./system-prompt.js";
 
 export type AgentLoopLifecycleKind = "prompt" | "resume" | "compact" | "reload";
 export type AgentLoopState = "idle" | "running" | "paused" | "completed" | "failed" | "aborted" | "destroyed";
@@ -63,6 +64,7 @@ interface AgentLoopOptions {
   readonly settingsManager: MultiAgentPiSettingsManager;
   readonly logger: AgentLogger;
   readonly disabledExtensions: Set<string>;
+  readonly systemPrompt: AgentSystemPrompt;
 }
 
 interface ActiveLifecycle {
@@ -76,6 +78,7 @@ export class AgentLoop {
   readonly name: string;
   readonly tag: string;
   readonly session: AgentSession;
+  readonly systemPrompt: AgentSystemPrompt;
 
   readonly #dir: string;
   readonly #settingsManager: MultiAgentPiSettingsManager;
@@ -96,6 +99,7 @@ export class AgentLoop {
     this.name = options.identity.name.trim();
     this.tag = options.identity.tag.trim();
     this.session = options.session;
+    this.systemPrompt = options.systemPrompt;
     this.#settingsManager = options.settingsManager;
     this.#logger = options.logger;
     this.#disabledExtensions = options.disabledExtensions;

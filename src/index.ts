@@ -38,6 +38,10 @@ export type {
   AgentLoopExtensionSources,
 } from "./agent/agent-session-factory.js";
 export {
+  DEFAULT_AGENT_SYSTEM_PROMPT,
+  type AgentSystemPrompt,
+} from "./agent/system-prompt.js";
+export {
   forkBranchEntries,
   forkConversationHistory,
   initializeConversationHistory,
