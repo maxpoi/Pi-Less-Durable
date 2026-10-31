@@ -125,15 +125,17 @@ export class MultiAgentPiHarness {
   }
 
   /**
-   * Reload only when every targeted Room is idle.
+   * Reload only after every targeted Room passes complete AgentLoop reload preflight.
+   * This is stricter than isBusy because pending prompt queues block reload without
+   * making their AgentLoops or Rooms busy.
    *
-   * Event-bus integration contract for the later Bridge layer: before checking
-   * isBusy, Harness must make its bus queue all incoming Room, periodic, and
-   * background-agent messages so no new prompt can reach a Room or native AgentSession.
-   * Each queued item must retain its original Room/loop target, complete
-   * payload, and caller promise. Whether reload succeeds or fails, wait until
-   * reload settles, then reopen the bus and flush in arrival order. Resolve or reject each original promise from its dispatched
-   * result so no steering or follow-up work is discarded or retargeted.
+   * Event-bus integration contract for the later Bridge layer: before invoking
+   * reload, the host must queue all incoming Room, periodic, and background-agent
+   * messages so no new prompt can reach a Room or native AgentSession. Each queued
+   * item must retain its original Room/loop target, complete payload, and caller
+   * promise. Whether reload succeeds or fails, wait until reload settles, then reopen
+   * the bus and flush in arrival order. Resolve or reject each original promise from
+   * its dispatched result so no steering or follow-up work is discarded or retargeted.
    */
   reload(options: ReloadMultiAgentPiHarnessOptions = {}): Promise<void> {
     if (this.#reloading) {
@@ -152,9 +154,8 @@ export class MultiAgentPiHarness {
         ? undefined
         : this.#requireRoom(options.roomId);
       const roomsToReload = targetedRoom === undefined ? rooms : [targetedRoom];
-      const busyRoom = roomsToReload.find(room => room.isBusy);
-      if (busyRoom !== undefined) {
-        throw new Error(`Cannot reload MultiAgentPiHarness while Room "${busyRoom.id}" is busy`);
+      for (const room of roomsToReload) {
+        room.assertReloadable(room === targetedRoom ? options.agentId : undefined);
       }
     } catch (error) {
       return Promise.reject(error);

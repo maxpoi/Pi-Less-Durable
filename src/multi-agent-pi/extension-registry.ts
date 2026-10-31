@@ -2,8 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   DefaultResourceLoader,
   type ExtensionAPI,
-  type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentLoopContext,
+  type AgentLoopContext,
+} from "./context.js";
 import type { AgentLogger } from "../logger/logger.js";
 import { assertAgentId } from "../room/loop-manager.js";
 import type { RoomId } from "../room/room-types.js";
@@ -12,26 +15,20 @@ export type MultiAgentPiExtensionTarget =
   | { readonly id: string }
   | { readonly tag: string };
 
+export type MultiAgentPiExtensionSetup = (
+  pi: ExtensionAPI,
+  context: AgentLoopContext,
+) => void | Promise<void>;
+
 export interface MultiAgentPiExtensionRegistration {
   /** Diagnostic label reported when targeted setup fails. */
   readonly id: string;
   readonly target: MultiAgentPiExtensionTarget;
-  readonly setup: ExtensionFactory;
-}
-
-export interface MultiAgentPiExtensionAPI {
-  /**
-   * Apply native Pi behavior when the AgentSession currently loading this source matches `target`.
-   * Await or return async setup when it must participate in the source's initial load transaction.
-   */
-  register(
-    pi: ExtensionAPI,
-    registration: MultiAgentPiExtensionRegistration,
-  ): Promise<void>;
+  readonly setup: MultiAgentPiExtensionSetup;
 }
 
 export interface MultiAgentPiResourceLoaderContext {
-  roomId?: RoomId;
+  roomId: RoomId | undefined;
   readonly id: string;
   readonly tag: string;
   readonly logger: AgentLogger;
@@ -95,17 +92,19 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   }
 }
 
-function requireAgentContext(pi: ExtensionAPI): MultiAgentPiResourceLoaderContext {
-  if (!pi || typeof pi !== "object" || typeof pi.on !== "function") {
-    throw new Error("multiAgentPi.register() requires the current Pi ExtensionAPI");
-  }
+function requireAgentContext(): MultiAgentPiResourceLoaderContext {
   const context = extensionLoadContext.getStore();
   if (!context) {
     throw new Error(
-      "multiAgentPi.register() requires a MultiAgentPi AgentLoop extension context",
+      "multiAgentPi requires a MultiAgentPi AgentLoop extension load context",
     );
   }
   return context;
+}
+
+/** @internal */
+export function getContext(): AgentLoopContext {
+  return createAgentLoopContext(requireAgentContext());
 }
 
 function assertRegistration(
@@ -167,22 +166,25 @@ function createTargetedSetupError(
   );
 }
 
-function register(
+/** @internal */
+export function register(
   pi: ExtensionAPI,
   registration: MultiAgentPiExtensionRegistration,
 ): Promise<void> {
+  if (!pi || typeof pi !== "object" || typeof pi.on !== "function") {
+    throw new Error("multiAgentPi.register requires the current Pi ExtensionAPI");
+  }
   assertRegistration(registration);
-  const context = requireAgentContext(pi);
+  const context = requireAgentContext();
   if (!matches(registration.target, context)) return Promise.resolve();
 
   try {
-    return Promise.resolve(registration.setup(pi)).catch(error => {
+    return Promise.resolve(
+      registration.setup(pi, createAgentLoopContext(context)),
+    ).catch(error => {
       throw createTargetedSetupError(registration.id.trim(), context, error);
     });
   } catch (error) {
     throw createTargetedSetupError(registration.id.trim(), context, error);
   }
 }
-
-/** Targeted native Pi behavior evaluated independently in every AgentSession. */
-export const multiAgentPi: MultiAgentPiExtensionAPI = Object.freeze({ register });

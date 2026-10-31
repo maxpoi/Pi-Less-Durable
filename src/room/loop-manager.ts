@@ -32,6 +32,16 @@ export function assertAgentIdentity(identity: AgentIdentity): void {
   }
 }
 
+/** Validate and canonicalize one identity before any AgentLoop resources are assembled. */
+export function normalizeAgentIdentity(identity: AgentIdentity): AgentIdentity {
+  assertAgentIdentity(identity);
+  return {
+    id: identity.id,
+    name: identity.name.trim(),
+    tag: identity.tag.trim(),
+  };
+}
+
 /** Owns AgentLoop registration, selection, and teardown for one Room. */
 export class LoopManager {
   readonly #records = new Map<string, AgentRegistration>();

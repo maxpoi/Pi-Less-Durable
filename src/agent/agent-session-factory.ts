@@ -14,6 +14,7 @@ import {
   type ModelRuntime,
   SessionManager,
   type SettingsManager,
+  type ToolDefinition,
   convertToLlm,
 } from "@earendil-works/pi-coding-agent";
 import { AgentLoop, type CreateAgentLoopOptions } from "./agent-loop.js";
@@ -42,7 +43,7 @@ import {
 import type { AgentLogger } from "../logger/logger.js";
 import type { CodexServerCompactionController } from "../compaction/codex-server-compaction.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
-import { MultiAgentPiResourceLoader } from "../extensions/multi-agent-pi-extension-registry.js";
+import { MultiAgentPiResourceLoader } from "../multi-agent-pi/extension-registry.js";
 import { MultiAgentPiHarness } from "../multi-agent-pi-harness.js";
 import {
   resolveExplicitPersistenceDirectory,
@@ -50,9 +51,13 @@ import {
 } from "../path-validation.js";
 import {
   PRIMARY_AGENT_TAG,
-  assertAgentIdentity,
+  normalizeAgentIdentity,
   type AgentIdentity,
 } from "../room/loop-manager.js";
+import {
+  createCancelCodeReviewTool,
+  createCodeReviewTool,
+} from "../tools/code-review.js";
 
 
 /** Consumer-applied configuration for constructing one agent runtime. */
@@ -62,6 +67,8 @@ export interface AgentConfig {
   readonly model?: Model<Api>;
   readonly thinkingLevel?: ThinkingLevel;
   readonly initialConversationHistory?: ConversationHistory;
+  /** Native Pi allowlist applied to registered, active, codemode, and deferred tools. */
+  readonly allowedToolNames?: readonly string[];
   /** Mutable structured prompt state owned and exposed by the created AgentLoop. */
   readonly systemPrompt?: AgentSystemPrompt;
 }
@@ -81,6 +88,7 @@ interface CreateNativeAgentSessionOptions {
   readonly modelRuntime: ModelRuntime;
   readonly resourceLoader: MultiAgentPiResourceLoader;
   readonly codexServerCompaction: CodexServerCompactionController;
+  readonly customTools: readonly ToolDefinition[];
 }
 
 /**
@@ -100,6 +108,7 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
     modelRuntime,
     resourceLoader,
     codexServerCompaction,
+    customTools,
   } = options;
   const sessionContext = sessionManager.buildSessionContext();
   const branchEntries = sessionManager.getBranch();
@@ -199,6 +208,10 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
     resourceLoader,
     modelRuntime,
     extensionRunnerRef,
+    customTools: [...customTools],
+    ...(config.allowedToolNames === undefined
+      ? {}
+      : { allowedToolNames: [...config.allowedToolNames] }),
   });
 
   return {
@@ -215,7 +228,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   if (hasDir === hasRoom) {
     throw new Error("AgentLoop.create() requires exactly one of dir or room");
   }
-  assertAgentIdentity(options.agent);
+  const agent = normalizeAgentIdentity(options.agent);
   if (!options.config || typeof options.config.cwd !== "string" || !options.config.cwd.trim()) {
     throw new Error(`AgentLoop "${options.agent.id}" requires an explicit cwd`);
   }
@@ -224,10 +237,10 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   if (hasRoom) {
     const room = options.room!;
     harness.assertRoomAdmissionAvailable(room);
-    if (room.has(options.agent.id)) {
-      throw new Error(`Agent "${options.agent.id}" already exists in Room "${room.id}"`);
+    if (room.has(agent.id)) {
+      throw new Error(`Agent "${agent.id}" already exists in Room "${room.id}"`);
     }
-    if (options.agent.tag.trim() === PRIMARY_AGENT_TAG && room.primaryId !== undefined) {
+    if (agent.tag === PRIMARY_AGENT_TAG && room.primaryId !== undefined) {
       throw new Error(`Room "${room.id}" already has a primary agent`);
     }
   } else if (harness.isReloading) {
@@ -236,11 +249,9 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
 
   const dir = hasDir
     ? options.dir!
-    : options.agent.tag.trim() === PRIMARY_AGENT_TAG
+    : agent.tag === PRIMARY_AGENT_TAG
       ? options.room!.roomDir
-      : resolve(options.room!.roomDir, "loops", options.agent.id);
-
-  const agent = options.agent;
+      : resolve(options.room!.roomDir, "loops", agent.id);
   const systemPrompt = createAgentSystemPrompt(options.config.systemPrompt);
   const config: AgentConfig = {
     ...options.config,
@@ -274,7 +285,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     });
   }
   const sessionManager = SessionManager.open(contextFile, loopDir, cwd);
-  const logTag = hasRoom ? `${options.room!.id}/${agent.tag.trim()}` : agent.tag.trim();
+  const logTag = hasRoom ? `${options.room!.id}/${agent.tag}` : agent.tag;
   const piSettingsManager = settingsManager as unknown as SettingsManager;
   const { messages: initialMessages, restoredMessageCount } = prepareInitialSessionMessages(
     sessionManager,
@@ -298,6 +309,20 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     logger,
     disabledExtensions,
   });
+  const customTools: ToolDefinition[] = [];
+  if (hasRoom && agent.tag === PRIMARY_AGENT_TAG) {
+    const codeReviewOptions = {
+      room: options.room!,
+      initiatingAgentId: agent.id,
+      modelRuntime,
+      settingsManager,
+      logger,
+    };
+    customTools.push(
+      createCodeReviewTool(codeReviewOptions),
+      createCancelCodeReviewTool(codeReviewOptions),
+    );
+  }
   const promptExtensions = createAgentSystemPromptExtensions(systemPrompt);
   const promptComposerPath = `<inline:${promptExtensions.composer.name}>`;
   const promptFinalizerPath = `<inline:${promptExtensions.finalizer.name}>`;
@@ -380,9 +405,9 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       appendSystemPromptOverride: () => [],
     },
     {
-      ...(hasRoom ? { roomId: options.room!.id } : {}),
+      roomId: hasRoom ? options.room!.id : undefined,
       id: agent.id,
-      tag: agent.tag.trim(),
+      tag: agent.tag,
       logger,
     },
     harnessExtensionFiles,
@@ -398,6 +423,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     modelRuntime,
     resourceLoader,
     codexServerCompaction,
+    customTools,
   });
   if (result.session.model === undefined) {
     logger.warning(
@@ -426,7 +452,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        `Room "${options.room!.id}" failed to discard agent "${loop.id}" cleanly`,
+        `Room "${options.room!.id}" failed to discard agent "${agent.id}" cleanly`,
       );
     }
     throw error;

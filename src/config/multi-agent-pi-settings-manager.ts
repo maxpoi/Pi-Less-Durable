@@ -2,11 +2,11 @@ import {
   MultiAgentPiCompactionPolicy,
   type MultiAgentPiCompactionModelRef,
 } from "../compaction/compaction-policy.js";
-import type {
-  MultiAgentPiCompactionSettings,
-  MultiAgentPiConfig,
-  MultiAgentPiRetrySettings,
-  ThinkingLevel,
+import {
+  type MultiAgentPiCompactionSettings,
+  type MultiAgentPiConfig,
+  type MultiAgentPiRetrySettings,
+  type ThinkingLevel,
 } from "./config-types.js";
 
 // Keep the host-supplied provider stream aligned with Pi SDK defaults.

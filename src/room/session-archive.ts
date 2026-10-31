@@ -10,6 +10,7 @@ import { join } from "node:path";
 const CONTEXT_FILE = "context.jsonl";
 const ARCHIVED_COMPANION_FILES = Object.freeze([
   "context.meta.json",
+  "log.jsonl",
   "MEMORY.md",
   "usage.jsonl",
 ]);
