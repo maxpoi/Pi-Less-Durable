@@ -1,12 +1,24 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type {
+  AgentLoopQueuedPromptType,
+  AgentLoopResult,
+} from "../agent/agent-loop.js";
 import type { Room, RoomId } from "../room/room.js";
 
-/** Application input for one native agent turn within a Room. */
+/** Application input for one immediate AgentLoop Round within a Room. */
 export interface RoomBridgeRunInput {
   readonly text: string;
   /** Explicit destination; omitted input uses the selected agent, then the primary agent. */
   readonly agentId?: string;
   readonly images?: readonly ImageContent[];
+}
+
+/** Application input for one Room-routed future Round. */
+export interface RoomBridgeEnqueueInput {
+  readonly type: AgentLoopQueuedPromptType;
+  readonly content: string;
+  /** Explicit destination; omitted input uses the selected agent, then the primary agent. */
+  readonly agentId?: string;
 }
 
 /**
@@ -25,10 +37,16 @@ export class RoomBridge {
     return this.#room.id;
   }
 
-  run(input: RoomBridgeRunInput): Promise<void> {
+  run(input: RoomBridgeRunInput): Promise<AgentLoopResult> {
     return this.#room.prompt(input.text, {
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.images === undefined ? {} : { images: input.images }),
+    });
+  }
+
+  enqueue(input: RoomBridgeEnqueueInput): void {
+    this.#room.enqueuePrompt(input.type, input.content, {
+      ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
     });
   }
 }

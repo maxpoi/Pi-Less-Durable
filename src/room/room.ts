@@ -2,17 +2,24 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { CompactionResult } from "@earendil-works/pi-coding-agent";
-import { AgentLoop } from "../agent/agent-loop.js";
+import { issueMultiAgentPiEvent } from "../multi-agent-pi/api.js";
+import {
+  AgentLoop,
+  type AgentLoopQueuedPromptType,
+  type AgentLoopResult,
+} from "../agent/agent-loop.js";
 import { MultiAgentPiHarness } from "../multi-agent-pi-harness.js";
 import {
   resolveExplicitPersistenceDirectory,
   resolvePersistenceDirectory,
 } from "../path-validation.js";
+import { BackgroundTaskManager } from "./background-task-manager.js";
 import { archiveRoomSession } from "./session-archive.js";
 import {
   LoopManager,
   PRIMARY_AGENT_TAG,
   assertAgentIdentity,
+  normalizeAgentIdentity,
   type AgentIdentity,
   type AgentRegistration,
 } from "./loop-manager.js";
@@ -24,6 +31,7 @@ import type {
   PrimaryAgentLoopOptions,
   ResetRoomOptions,
   ResetRoomResult,
+  RoomEnqueuePromptOptions,
   RoomId,
   RoomPromptOptions,
   RoomResetEndEvent,
@@ -39,6 +47,7 @@ export type {
   PrimaryAgentLoopOptions,
   ResetRoomOptions,
   ResetRoomResult,
+  RoomEnqueuePromptOptions,
   RoomId,
   RoomPromptOptions,
   RoomResetEndEvent,
@@ -52,10 +61,11 @@ interface RoomArchiveResult {
   readonly archiveName?: string;
 }
 
-/** One logical Room owning AgentLoops through a LoopManager. */
+/** One logical Room owning AgentLoops and detached background operations. */
 export class Room {
   readonly id: RoomId;
   readonly #loopManager = new LoopManager();
+  readonly #backgroundTasks: BackgroundTaskManager;
   readonly #resolvedRoomDir: string;
   readonly #beforeResetHandlers = new Set<BeforeRoomResetHandler>();
   readonly #resetEndHandlers = new Set<RoomResetEndHandler>();
@@ -69,6 +79,10 @@ export class Room {
   ) {
     this.id = id;
     this.#resolvedRoomDir = roomDir;
+    this.#backgroundTasks = new BackgroundTaskManager({
+      roomId: id,
+      logger: MultiAgentPiHarness.instance.logger,
+    });
   }
 
   /** Create one standalone Room, optionally with an automatically registered primary. */
@@ -83,11 +97,15 @@ export class Room {
 
     try {
       if (options.primaryLoop === undefined) return { room };
-      assertAgentIdentity(options.primaryLoop.agent);
-      if (options.primaryLoop.agent.tag.trim() !== PRIMARY_AGENT_TAG) {
+      const primaryAgent = normalizeAgentIdentity(options.primaryLoop.agent);
+      if (primaryAgent.tag !== PRIMARY_AGENT_TAG) {
         throw new Error(`Primary AgentLoop must use tag "${PRIMARY_AGENT_TAG}"`);
       }
-      const primaryLoop = await AgentLoop.create({ room, ...options.primaryLoop });
+      const primaryLoop = await AgentLoop.create({
+        room,
+        ...options.primaryLoop,
+        agent: primaryAgent,
+      });
       return { room, primaryLoop };
     } catch (error) {
       try {
@@ -124,9 +142,14 @@ export class Room {
 
   get isBusy(): boolean {
     if (this.#state !== "open") return true;
-    return this.#loopManager.listRegistrations().some(
-      registration => registration.loop.isBusy,
-    );
+    return this.#backgroundTasks.activeCount > 0
+      || this.#loopManager.listRegistrations().some(
+        registration => registration.loop.isBusy,
+      );
+  }
+
+  get backgroundTasks(): BackgroundTaskManager {
+    return this.#backgroundTasks;
   }
 
   get primaryId(): string | undefined {
@@ -203,7 +226,7 @@ export class Room {
   prompt(
     message: string,
     options: RoomPromptOptions = {},
-  ): Promise<void> {
+  ): Promise<AgentLoopResult> {
     try {
       this.#assertOpen("prompt an agent");
       const registration = options.agentId === undefined
@@ -216,6 +239,21 @@ export class Room {
     } catch (error) {
       return Promise.reject(error);
     }
+  }
+
+  enqueuePrompt(
+    type: AgentLoopQueuedPromptType,
+    content: string,
+    options: RoomEnqueuePromptOptions = {},
+  ): void {
+    this.#assertOpen("enqueue a prompt");
+    const registration = options.agentId === undefined
+      ? this.#loopManager.selectedRegistration ?? this.#loopManager.primaryRegistration
+      : this.#requireRegistration(options.agentId);
+    if (!registration) {
+      throw new Error(`Cannot enqueue a prompt in Room "${this.id}": no selected or primary agent is available`);
+    }
+    registration.loop.enqueuePrompt(type, content);
   }
 
   abort(agentId: string): Promise<void> {
@@ -257,16 +295,14 @@ export class Room {
     }
   }
 
+  /** Validate every targeted AgentLoop before any Room or Harness reload mutation. */
+  assertReloadable(agentId?: string): void {
+    this.#preflightReload(agentId);
+  }
+
   reload(agentId?: string): Promise<void> {
     try {
-      this.#assertOpen("reload agents");
-      const registrations = agentId === undefined
-        ? this.#loopManager.listRegistrations().sort((left, right) =>
-            left.id === this.primaryId ? -1 : right.id === this.primaryId ? 1 : 0
-          )
-        : [this.#requireRegistration(agentId)];
-      const busy = registrations.find(registration => registration.loop.isBusy);
-      if (busy) throw new Error(`Cannot reload Room "${this.id}" while agent "${busy.id}" is busy`);
+      const registrations = this.#preflightReload(agentId);
       this.#state = "reloading";
       return this.#reloadRegistrations(registrations);
     } catch (error) {
@@ -283,8 +319,9 @@ export class Room {
     };
   }
 
-  /** Register a Room lifecycle listener. Reset keeps listeners alive through `room_reset_end`. */
+  /** @internal Register an owner-local Room lifecycle listener. */
   on(event: "before_room_reset", handler: BeforeRoomResetHandler): () => void;
+  /** @internal Register an owner-local Room lifecycle listener. */
   on(event: "room_reset_end", handler: RoomResetEndHandler): () => void;
   on(
     event: "before_room_reset" | "room_reset_end",
@@ -316,15 +353,20 @@ export class Room {
     const sessionName = options.sessionName
       ?? this.primary?.session.sessionManager.getSessionName();
     this.#state = "resetting";
+    this.#backgroundTasks.closeAdmission();
 
     const archive = await this.#resetRuntime(sessionName);
     if (options.primaryLoop === undefined) return { room: this, ...archive };
-    assertAgentIdentity(options.primaryLoop.agent);
-    if (options.primaryLoop.agent.tag.trim() !== PRIMARY_AGENT_TAG) {
+    const primaryAgent = normalizeAgentIdentity(options.primaryLoop.agent);
+    if (primaryAgent.tag !== PRIMARY_AGENT_TAG) {
       throw new Error(`Primary AgentLoop must use tag "${PRIMARY_AGENT_TAG}"`);
     }
 
-    const primaryLoop = await AgentLoop.create({ room: this, ...options.primaryLoop });
+    const primaryLoop = await AgentLoop.create({
+      room: this,
+      ...options.primaryLoop,
+      agent: primaryAgent,
+    });
     return { room: this, ...archive, primaryLoop };
   }
 
@@ -346,10 +388,10 @@ export class Room {
     }
 
     this.#state = "closed";
+    this.#backgroundTasks.closeAdmission();
     this.#beforeResetHandlers.clear();
     this.#resetEndHandlers.clear();
-    const teardown = this.#loopManager.destroyAll();
-    const operation = this.#closeRuntime(teardown);
+    const operation = this.#closeRuntime();
     this.#closePromise = operation;
     return operation;
   }
@@ -358,6 +400,7 @@ export class Room {
     try {
       await this.#emitBeforeReset();
       try {
+        await this.#backgroundTasks.abortAllAndWait("Room reset");
         await this.#loopManager.destroyAll();
       } catch (error) {
         throw new Error(
@@ -367,13 +410,16 @@ export class Room {
       }
 
       const archiveName = archiveRoomSession(this.roomDir, sessionName);
-      for (const directoryName of ["attachments", "loops"]) {
+      for (const directoryName of ["attachments", "loops", "scratch"]) {
         await rm(join(this.roomDir, directoryName), { recursive: true, force: true });
       }
       await this.#emitResetEnd(archiveName);
       return archiveName === undefined ? {} : { archiveName };
     } finally {
-      if (this.#state === "resetting") this.#state = "open";
+      if (this.#state === "resetting") {
+        this.#backgroundTasks.reopen();
+        this.#state = "open";
+      }
     }
   }
 
@@ -383,16 +429,28 @@ export class Room {
       roomId: this.id,
       roomDir: this.roomDir,
     };
-    for (const handler of [...this.#beforeResetHandlers]) {
-      try {
-        await handler(event);
-      } catch (error) {
+    await issueMultiAgentPiEvent(
+      event,
+      this,
+      async context => {
+        for (const handler of [...this.#beforeResetHandlers]) {
+          try {
+            await handler(event, context);
+          } catch (error) {
+            MultiAgentPiHarness.instance.logger.warning(
+              `[${this.id}] before_room_reset handler failed`,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+      },
+      error => {
         MultiAgentPiHarness.instance.logger.warning(
-          `[${this.id}] before_room_reset handler failed`,
+          `[${this.id}] public before_room_reset handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      }
-    }
+      },
+    );
   }
 
   async #emitResetEnd(archiveName: string | undefined): Promise<void> {
@@ -402,28 +460,57 @@ export class Room {
       roomDir: this.roomDir,
       ...(archiveName === undefined ? {} : { archiveName }),
     };
-    for (const handler of [...this.#resetEndHandlers]) {
-      try {
-        await handler(event);
-      } catch (error) {
+    await issueMultiAgentPiEvent(
+      event,
+      this,
+      async context => {
+        for (const handler of [...this.#resetEndHandlers]) {
+          try {
+            await handler(event, context);
+          } catch (error) {
+            MultiAgentPiHarness.instance.logger.warning(
+              `[${this.id}] room_reset_end handler failed`,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+        }
+      },
+      error => {
         MultiAgentPiHarness.instance.logger.warning(
-          `[${this.id}] room_reset_end handler failed`,
+          `[${this.id}] public room_reset_end handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      }
+      },
+    );
+  }
+
+  #preflightReload(agentId: string | undefined): AgentRegistration[] {
+    this.#assertOpen("reload agents");
+    if (this.#backgroundTasks.activeCount > 0) {
+      throw new Error(`Cannot reload Room "${this.id}" while background tasks are active`);
     }
+    const registrations = this.#resolveReloadRegistrations(agentId);
+    this.#assertRegistrationsReloadable(registrations);
+    return registrations;
+  }
+
+  #resolveReloadRegistrations(agentId: string | undefined): AgentRegistration[] {
+    if (agentId !== undefined) return [this.#requireRegistration(agentId)];
+    return this.#loopManager.listRegistrations();
+  }
+
+  #assertRegistrationsReloadable(registrations: readonly AgentRegistration[]): void {
+    for (const registration of registrations) registration.loop.assertReloadable();
   }
 
   async #reloadRegistrations(registrations: readonly AgentRegistration[]): Promise<void> {
     const errors: unknown[] = [];
-    const primaryId = this.primaryId;
     try {
       for (const registration of registrations) {
         try {
           await registration.loop.reload();
         } catch (error) {
           errors.push(error);
-          if (registration.id === primaryId) break;
         }
       }
     } finally {
@@ -435,12 +522,17 @@ export class Room {
     }
   }
 
-  async #closeRuntime(teardown: Promise<void>): Promise<void> {
+  async #closeRuntime(): Promise<void> {
     const errors: unknown[] = [];
-    try {
-      await teardown;
-    } catch (error) {
-      errors.push(error);
+    for (const operation of [
+      () => this.#backgroundTasks.abortAllAndWait("Room closed"),
+      () => this.#loopManager.destroyAll(),
+    ]) {
+      try {
+        await operation();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     for (const handler of [...this.#closedHandlers]) {
       try {

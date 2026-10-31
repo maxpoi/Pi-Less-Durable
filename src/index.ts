@@ -9,14 +9,13 @@ export {
   SessionManager,
   type AgentSessionConfig,
   type CreateAgentSessionResult,
-  type ExtensionAPI,
-  type ExtensionFactory,
-  type InlineExtension,
   type SessionEntry,
   type SettingsManager,
-  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 export type { Api, Model } from "@earendil-works/pi-ai";
+
+export { multiAgentPi } from "./multi-agent-pi/api.js";
+export type * from "./multi-agent-pi/api.js";
 
 export {
   launchBundledPiLogin,
@@ -25,11 +24,15 @@ export {
 } from "./bundled-pi.js";
 export {
   RoomBridge,
+  type RoomBridgeEnqueueInput,
   type RoomBridgeRunInput,
 } from "./bridge/room-bridge.js";
 export {
   AgentLoop,
   type AgentLoopLifecycleKind,
+  type AgentLoopQueuedPromptType,
+  type AgentLoopResult,
+  type AgentLoopRoundOutcome,
   type AgentLoopState,
   type CreateAgentLoopOptions,
 } from "./agent/agent-loop.js";
@@ -56,6 +59,9 @@ export {
   CODE_REVIEW_IDENTITY_PROMPT,
   CODE_REVIEW_METHODOLOGY_PROMPT,
   CODE_REVIEW_STANDARDS_PROMPT,
+  FIRST_PRINCIPLE_SECTION,
+  REVIEW_IDENTITY,
+  REVIEW_TOOL_ALLOWLIST,
   buildCodeReviewTaskPrompt,
 } from "./agent-loop-imp/code-review-prompt.js";
 export {
@@ -70,12 +76,6 @@ export {
 } from "./config/config-types.js";
 export { MultiAgentPiSettingsManager } from "./config/multi-agent-pi-settings-manager.js";
 export {
-  multiAgentPi,
-  type MultiAgentPiExtensionAPI,
-  type MultiAgentPiExtensionRegistration,
-  type MultiAgentPiExtensionTarget,
-} from "./extensions/multi-agent-pi-extension-registry.js";
-export {
   MultiAgentPiHarness,
   type MultiAgentPiHarnessOptions,
   type ReloadMultiAgentPiHarnessOptions,
@@ -88,22 +88,41 @@ export {
   type MessageQueue,
 } from "./output/message-post-queue.js";
 export {
+  BackgroundTaskManager,
+  type BackgroundTaskHandle,
+  type BackgroundTaskManagerOptions,
+} from "./room/background-task-manager.js";
+export {
   PRIMARY_AGENT_TAG,
   type AgentIdentity,
 } from "./room/loop-manager.js";
 export {
+  BACKGROUND_STARTED_MESSAGE,
+  CODE_REVIEW_ALREADY_RUNNING_MESSAGE,
+  CODE_REVIEW_BACKGROUND_CANCELLED_NOTICE,
+  CODE_REVIEW_BACKGROUND_RUNNING_NOTICE,
+  CODE_REVIEW_PROCESSING_GUIDELINES,
+  CODE_REVIEW_RESULT_FOLLOWUP_INSTRUCTION,
+  CODE_REVIEW_TASK_LABEL,
+  createCancelCodeReviewTool,
+  createCodeReviewTool,
+  formatBackgroundCodeReviewReport,
+  formatBackgroundCodeReviewResult,
+  hasActiveCodeReviewTask,
+  type CodeReviewResultDetails,
+  type CodeReviewResultStatus,
+  type CreateCodeReviewToolOptions,
+} from "./tools/code-review.js";
+export {
   Room,
   createRoomId,
-  type BeforeRoomResetEvent,
-  type BeforeRoomResetHandler,
   type CreateRoomOptions,
   type CreateRoomResult,
   type PrimaryAgentLoopOptions,
   type ResetRoomOptions,
   type ResetRoomResult,
+  type RoomEnqueuePromptOptions,
   type RoomId,
   type RoomPromptOptions,
-  type RoomResetEndEvent,
-  type RoomResetEndHandler,
   type RoomState,
 } from "./room/room.js";

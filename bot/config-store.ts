@@ -1,10 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  MultiAgentPiCompactionSettings,
-  MultiAgentPiConfig,
-  MultiAgentPiRetrySettings,
+import {
+  type MultiAgentPiCompactionSettings,
+  type MultiAgentPiConfig,
+  type MultiAgentPiRetrySettings,
 } from "pi-less-durable";
 
 export interface BotLimitedModeSettings {
@@ -249,7 +249,6 @@ export class BotConfigStore {
     const defaultsObject = this.#readDefaultConfigObject();
     const defaults = requireDefaultConfig(defaultsObject, this.#defaultConfigPath);
     const document = deepMerge(defaultsObject, this.#readConfigObject(this.configPath));
-    this.#applyExistingConfigMigrations(document);
     return { document, config: parseConfig(document, defaults) };
   }
 
@@ -314,18 +313,4 @@ export class BotConfigStore {
     }
   }
 
-  #applyExistingConfigMigrations(config: Record<string, unknown>): void {
-    delete config.cacheControlRoomMembers;
-
-    const limitedMode = config.limitedMode;
-    if (!isRecord(limitedMode)) return;
-
-    delete limitedMode.enabled;
-    if (
-      limitedMode.model === "claude-sonnet-4.5"
-      || limitedMode.model === "github-copilot/claude-sonnet-4.5"
-    ) {
-      limitedMode.model = "github-copilot/claude-sonnet-4.6";
-    }
-  }
 }

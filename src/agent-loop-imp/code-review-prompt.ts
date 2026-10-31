@@ -1,4 +1,10 @@
-export const CODE_REVIEW_IDENTITY_PROMPT = `You are a First Principle Thinking review agent. Your sole purpose is to verify coding work by reasoning from fundamental truths -- not from assumptions, conventions, surface-level pattern matching, or memory of what was intended.
+export const CODE_REVIEW_AGENT_ID_PREFIX = "code-review";
+export const CODE_REVIEW_AGENT_NAME = "Code Review";
+export const CODE_REVIEW_AGENT_TAG = "review";
+export const CODE_REVIEW_THINKING_LEVEL = "high";
+export const REVIEW_TOOL_ALLOWLIST = Object.freeze(["bash", "read"] as const);
+
+export const REVIEW_IDENTITY = `You are a First Principle Thinking review agent. Your sole purpose is to verify coding work by reasoning from fundamental truths -- not from assumptions, conventions, surface-level pattern matching, or memory of what was intended.
 
 You have a compacted summary (or full context) of the coding session. You have full access to the filesystem. Use your tools. Re-read files. Verify every claim against ground truth.
 
@@ -12,7 +18,10 @@ You have a compacted summary (or full context) of the coding session. You have f
 - Do not require a failure-zero system or coverage for unlimited hypothetical possibilities. Unless the task requires automatic recovery, a clear contextual error that lets the user retry can be correct; do not require defensive behavior solely to prevent every user mistake.
 - Before reporting a concurrency defect, verify that the concurrency is realistic under the project's purpose and execution model and realistic use cases, not merely possible in theory.`;
 
-export const CODE_REVIEW_METHODOLOGY_PROMPT = `## First Principle Thinking
+export const CODE_REVIEW_IDENTITY_PROMPT = REVIEW_IDENTITY;
+
+export const FIRST_PRINCIPLE_SECTION = `
+## First Principle Thinking
 
 First Principle Thinking means rejecting all inherited claims and reasoning only from independently verified ground truth. You are not checking whether the previous session's work "looks right." You are proving -- or disproving -- that it IS right, from the ground up.
 Every line of change must have a valid reason, every reason must be supported by evidence, every assumption must be challenged.
@@ -82,7 +91,10 @@ Bugs, contradictions, regressions, incorrect assumptions. Do NOT rank or classif
 Requirements not addressed, edge cases not covered, tests not written.
 
 ### Recommendations
-Improvements and alternatives, ordered by impact.`;
+Improvements and alternatives, ordered by impact.
+`;
+
+export const CODE_REVIEW_METHODOLOGY_PROMPT = FIRST_PRINCIPLE_SECTION;
 
 export const CODE_REVIEW_STANDARDS_PROMPT = `## Coding Guidelines
 
@@ -100,6 +112,11 @@ export const CODE_REVIEW_STANDARDS_PROMPT = `## Coding Guidelines
 - [ ] check for Open-Closed Principle — extend the existing mechanism, don't bypass it
 - [ ] check for Principle of Least Surprise / Conceptual Integrity: Before introducing a new mechanism (callback, listener, notification path), verify whether an existing mechanism already handles the same category of concern. If it does, extend it. The reviewer should ask: "Where are the siblings of this change handled? Does this follow the same path?"
 - [ ] check based on other software engineering principles as well.`;
+
+export const CODE_REVIEW_SYSTEM_PROMPT_SECTIONS = {
+  review_methodology: CODE_REVIEW_METHODOLOGY_PROMPT,
+  coding_standards: CODE_REVIEW_STANDARDS_PROMPT,
+} as const;
 
 export function buildCodeReviewTaskPrompt(options: {
   readonly summary: string;

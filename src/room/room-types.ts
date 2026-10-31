@@ -1,6 +1,10 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentLoop } from "../agent/agent-loop.js";
 import type {
+  MultiAgentPiHandler,
+  RoomContext,
+} from "../multi-agent-pi/context.js";
+import type {
   AgentConfig,
   AgentLoopExtensionSources,
 } from "../agent/agent-session-factory.js";
@@ -13,8 +17,14 @@ export type RoomId = string & { readonly [roomIdBrand]: "RoomId" };
 export type RoomState = "open" | "reloading" | "resetting" | "closed";
 
 export interface RoomPromptOptions {
+  /** Explicit destination; omitted input uses the selected agent, then the primary agent. */
   readonly agentId?: string;
   readonly images?: readonly ImageContent[];
+}
+
+export interface RoomEnqueuePromptOptions {
+  /** Explicit destination; omitted input uses the selected agent, then the primary agent. */
+  readonly agentId?: string;
 }
 
 /** Consumer-owned inputs for creating one primary AgentLoop. */
@@ -67,10 +77,12 @@ export interface RoomResetEndEvent {
   readonly archiveName?: string;
 }
 
-export type BeforeRoomResetHandler = (
-  event: BeforeRoomResetEvent,
-) => void | Promise<void>;
+export type BeforeRoomResetHandler = MultiAgentPiHandler<
+  BeforeRoomResetEvent,
+  RoomContext
+>;
 
-export type RoomResetEndHandler = (
-  event: RoomResetEndEvent,
-) => void | Promise<void>;
+export type RoomResetEndHandler = MultiAgentPiHandler<
+  RoomResetEndEvent,
+  RoomContext
+>;
