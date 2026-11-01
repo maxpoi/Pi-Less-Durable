@@ -36,6 +36,7 @@ export interface PrimaryAgentLoopOptions {
 
 /** Consumer-owned identity, persistence, and optional primary inputs. */
 export interface CreateRoomOptions {
+  /** UX-facing Room name and Harness identity; also used as the session-archive prefix. Maximum 200 ASCII characters from `a-zA-Z0-9_-+=.()[]{}!@#$%^&`. */
   readonly id?: string;
   /**
    * Room data directory, exposed through roomDir as its filesystem-canonical identity.
@@ -51,8 +52,6 @@ export interface CreateRoomResult {
 }
 
 export interface ResetRoomOptions {
-  /** Optional archive label. Filesystem-invalid labels may reject reset. */
-  readonly sessionName?: string;
   /** Optional primary created only after reset has reopened this Room. */
   readonly primaryLoop?: PrimaryAgentLoopOptions;
 }

@@ -1,4 +1,5 @@
 import type { AgentIdentity, AgentLoop } from "../agent/agent-loop.js";
+import { assertIdentityId } from "../identity-validation.js";
 
 export type { AgentIdentity } from "../agent/agent-loop.js";
 
@@ -8,15 +9,8 @@ export interface AgentRegistration extends AgentIdentity {
   readonly loop: AgentLoop;
 }
 
-const AGENT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
-
 export function assertAgentId(id: string): void {
-  if (typeof id !== "string" || !id.trim()) throw new Error("Agent id must not be empty");
-  if (!AGENT_ID_PATTERN.test(id)) {
-    throw new Error(
-      "Agent id must be one lowercase filesystem-safe segment using letters, numbers, dots, underscores, or hyphens",
-    );
-  }
+  assertIdentityId(id, "Agent id");
 }
 
 export function assertAgentIdentity(identity: AgentIdentity): void {
@@ -32,13 +26,13 @@ export function assertAgentIdentity(identity: AgentIdentity): void {
   }
 }
 
-/** Validate and canonicalize one identity before any AgentLoop resources are assembled. */
+/** Validate and copy one identity before any AgentLoop resources are assembled. */
 export function normalizeAgentIdentity(identity: AgentIdentity): AgentIdentity {
   assertAgentIdentity(identity);
   return {
     id: identity.id,
-    name: identity.name.trim(),
-    tag: identity.tag.trim(),
+    name: identity.name,
+    tag: identity.tag,
   };
 }
 

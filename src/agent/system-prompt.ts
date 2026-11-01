@@ -39,7 +39,7 @@ export function createAgentSystemPrompt(
 }
 
 export function resolveAgentSystemPromptMain(main: string): string {
-  return main.trim() ? main : DEFAULT_AGENT_SYSTEM_PROMPT;
+  return main ? main : DEFAULT_AGENT_SYSTEM_PROMPT;
 }
 
 function renderToolsSection(
@@ -54,10 +54,8 @@ function renderToolsSection(
   for (const name of new Set(selectedTools)) {
     const tool = toolsByName.get(name);
     if (tool === undefined || tool.exposure === "hidden" || hiddenTools.has(name)) continue;
-    const snippet = options.toolSnippets[name]?.trim() ?? "";
-    const guidelines = (options.toolGuidelines[name] ?? [])
-      .map(guideline => guideline.trim())
-      .filter(Boolean);
+    const snippet = options.toolSnippets[name] ?? "";
+    const guidelines = options.toolGuidelines[name] ?? [];
     if (!snippet && guidelines.length === 0) continue;
 
     lines.push(`- **${name}**:${snippet ? ` ${snippet}` : ""}`);
@@ -78,13 +76,12 @@ function refreshFrameworkSections(
   options: NormalizedBuildSystemPromptOptions,
   selectedTools: readonly string[],
   registeredTools: readonly ToolInfo[],
-): void {
-  systemPrompt.sections.tools = renderToolsSection(
-    options,
-    selectedTools,
-    registeredTools,
-  );
-  systemPrompt.sections.skills = renderSkillsSection();
+): { tools: string; skills: string } {
+  const tools = renderToolsSection(options, selectedTools, registeredTools);
+  const skills = renderSkillsSection();
+  systemPrompt.sections.tools = tools;
+  systemPrompt.sections.skills = skills;
+  return { tools, skills };
 }
 
 function applyBaseSystemPrompt(
@@ -146,15 +143,15 @@ export function createAgentSystemPromptExtensions(
           ? pi.getActiveTools()
           : event.systemPromptOptions.selectedTools;
 
-        refreshFrameworkSections(
+        const sections = refreshFrameworkSections(
           systemPrompt,
           event.systemPromptOptions,
           selectedTools,
           pi.getAllTools(),
         );
         event.systemPromptOptions.skills = [];
-        event.systemPromptOptions.sections.tools = systemPrompt.sections.tools!;
-        event.systemPromptOptions.sections.skills = systemPrompt.sections.skills!;
+        event.systemPromptOptions.sections.tools = sections.tools;
+        event.systemPromptOptions.sections.skills = sections.skills;
       });
     },
   };

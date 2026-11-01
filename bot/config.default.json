@@ -5,7 +5,6 @@
     "keepRecentTokens": 20000,
     "codexServerSide": false
   },
-  "guardWorktree": true,
   "limitedMode": {
     "allowedUsers": [],
     "allowedTools": [],

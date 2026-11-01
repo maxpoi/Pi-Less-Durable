@@ -21,7 +21,6 @@ const INLINE_EXTENSION_PATH = "<inline:test-inline-compaction-observer>";
 const CUSTOM_EXTENSION_PATH = "<inline:test-custom-compaction-observer>";
 const CONFIG = {
   compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
-  guardWorktree: true,
   model: "gpt-5.6-sol",
   provider: "openai-codex",
   retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,

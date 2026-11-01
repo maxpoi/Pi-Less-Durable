@@ -14,11 +14,7 @@ import {
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
 import type { AgentLogger } from "../logger/logger.js";
 import type { AgentIdentity } from "../room/loop-manager.js";
-import bashTimeoutGuardExtension from "./bash-timeout-guard/extension.js";
 import { setupCompactionStripExtension } from "./compaction-strip/extension.js";
-import { createGitGuardExtension } from "./git-guard/extension.js";
-import permissionGateExtension from "./permission-gate/extension.js";
-import protectedPathsExtension from "./protected-paths/extension.js";
 
 export interface CreateBuiltInExtensionsOptions {
   readonly agent: AgentIdentity;
@@ -71,7 +67,6 @@ interface NamedInlineExtension {
 export interface BuiltInExtensions {
   readonly codemodeExtension: NamedInlineExtension;
   readonly compactionStripExtension: NamedInlineExtension;
-  readonly defaultExtensions: readonly NamedInlineExtension[];
   readonly codexServerCompactionExtension: NamedInlineExtension;
   readonly codexServerCompaction: CodexServerCompactionController;
 }
@@ -122,28 +117,6 @@ export function createBuiltInExtensions(
     pi => setupCompactionStripExtension(pi, logger),
     disabledExtensions,
   );
-  const defaultExtensions: readonly NamedInlineExtension[] = Object.freeze([
-    createDisableableExtension(
-      "bash-timeout-guard",
-      bashTimeoutGuardExtension,
-      disabledExtensions,
-    ),
-    createDisableableExtension(
-      "git-guard",
-      createGitGuardExtension(settingsManager),
-      disabledExtensions,
-    ),
-    createDisableableExtension(
-      "permission-gate",
-      permissionGateExtension,
-      disabledExtensions,
-    ),
-    createDisableableExtension(
-      "protected-paths",
-      protectedPathsExtension,
-      disabledExtensions,
-    ),
-  ]);
   const codexServerCompactionExtension: NamedInlineExtension = {
     name: `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEX_SERVER_COMPACTION_EXTENSION_NAME}-${agent.id}`,
     hidden: true,
@@ -153,7 +126,6 @@ export function createBuiltInExtensions(
   return {
     codemodeExtension,
     compactionStripExtension,
-    defaultExtensions,
     codexServerCompactionExtension,
     codexServerCompaction,
   };

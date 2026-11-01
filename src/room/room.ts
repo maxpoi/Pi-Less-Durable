@@ -8,6 +8,7 @@ import {
   type AgentLoopQueuedPromptType,
   type AgentLoopResult,
 } from "../agent/agent-loop.js";
+import { assertIdentityId } from "../identity-validation.js";
 import { MultiAgentPiHarness } from "../multi-agent-pi-harness.js";
 import {
   resolveExplicitPersistenceDirectory,
@@ -350,12 +351,10 @@ export class Room {
   /** Destroy and archive all loops, then optionally create a fresh primary. */
   async reset(options: ResetRoomOptions = {}): Promise<ResetRoomResult> {
     this.#assertOpen("reset");
-    const sessionName = options.sessionName
-      ?? this.primary?.session.sessionManager.getSessionName();
     this.#state = "resetting";
     this.#backgroundTasks.closeAdmission();
 
-    const archive = await this.#resetRuntime(sessionName);
+    const archive = await this.#resetRuntime();
     if (options.primaryLoop === undefined) return { room: this, ...archive };
     const primaryAgent = normalizeAgentIdentity(options.primaryLoop.agent);
     if (primaryAgent.tag !== PRIMARY_AGENT_TAG) {
@@ -396,7 +395,7 @@ export class Room {
     return operation;
   }
 
-  async #resetRuntime(sessionName: string | undefined): Promise<RoomArchiveResult> {
+  async #resetRuntime(): Promise<RoomArchiveResult> {
     try {
       await this.#emitBeforeReset();
       try {
@@ -409,7 +408,7 @@ export class Room {
         );
       }
 
-      const archiveName = archiveRoomSession(this.roomDir, sessionName);
+      const archiveName = archiveRoomSession(this.roomDir, this.id);
       for (const directoryName of ["attachments", "loops", "scratch"]) {
         await rm(join(this.roomDir, directoryName), { recursive: true, force: true });
       }
@@ -583,7 +582,6 @@ export class Room {
 
 export function createRoomId(id?: string): RoomId {
   if (id === undefined) return randomUUID() as RoomId;
-  const normalized = id.trim();
-  if (!normalized) throw new Error("Room id must not be empty");
-  return normalized as RoomId;
+  assertIdentityId(id, "Room id");
+  return id as RoomId;
 }

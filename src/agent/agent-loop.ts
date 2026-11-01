@@ -71,7 +71,7 @@ export type AgentLoopRoundEndHandler = MultiAgentPiHandler<
 >;
 
 export interface AgentIdentity {
-  /** Stable identity unique within the containing Room. */
+  /** Stable identity unique within the containing Room. Maximum 200 ASCII characters from `a-zA-Z0-9_-+=.()[]{}!@#$%^&`. */
   readonly id: string;
   /** Non-unique user-facing label. */
   readonly name: string;
@@ -265,37 +265,36 @@ export class AgentLoop {
   /** Disable one loaded extension for this AgentLoop until its next explicit reload. */
   disable(extension: string): Promise<void> {
     this.#assertUsable("disable an extension on");
-    const normalizedExtension = extension.trim();
-    if (!normalizedExtension) throw new Error("Extension name must not be empty");
+    if (!extension.trim()) throw new Error("Extension name must not be empty");
     this.#assertSessionReloadAvailable("disable an extension on");
-    if (normalizedExtension === CODEMODE_EXTENSION_NAME) {
+    if (extension === CODEMODE_EXTENSION_NAME) {
       throw new Error(
-        `Extension "${normalizedExtension}" is controlled through setActiveToolsByName()`,
+        `Extension "${extension}" is controlled through setActiveToolsByName()`,
       );
     }
-    if (normalizedExtension === CODEX_SERVER_COMPACTION_EXTENSION_NAME) {
+    if (extension === CODEX_SERVER_COMPACTION_EXTENSION_NAME) {
       throw new Error(
-        `Extension "${normalizedExtension}" is controlled by compaction.codexServerSide`,
+        `Extension "${extension}" is controlled by compaction.codexServerSide`,
       );
     }
-    if (this.#disabledExtensions.has(normalizedExtension)) return Promise.resolve();
+    if (this.#disabledExtensions.has(extension)) return Promise.resolve();
 
-    const requestedNames = new Set([normalizedExtension]);
+    const requestedNames = new Set([extension]);
     const matches = this.session.resourceLoader.getExtensions().extensions.filter(
       loadedExtension => isExtensionDisabled(loadedExtension.path, requestedNames),
     );
     if (matches.length === 0) {
       throw new Error(
-        `Extension "${normalizedExtension}" is not loaded in agent loop "${this.id}"`,
+        `Extension "${extension}" is not loaded in agent loop "${this.id}"`,
       );
     }
     if (matches.length > 1) {
       throw new Error(
-        `Extension name "${normalizedExtension}" is ambiguous in agent loop "${this.id}"`,
+        `Extension name "${extension}" is ambiguous in agent loop "${this.id}"`,
       );
     }
 
-    this.#disabledExtensions.add(normalizedExtension);
+    this.#disabledExtensions.add(extension);
     return this.#reloadSession();
   }
 
@@ -473,7 +472,10 @@ export class AgentLoop {
   }
 
   #takeNextQueuedPromptGroup(): QueuedAgentLoopPrompt[] {
-    const first = this.#promptQueue.shift()!;
+    const first = this.#promptQueue.shift();
+    if (first === undefined) {
+      throw new Error(`Cannot take a queued prompt from empty agent loop "${this.id}"`);
+    }
     if (first.type === "wait-idle-then-prompt") return [first];
 
     const group = [first];

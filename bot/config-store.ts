@@ -133,9 +133,6 @@ function parseConfig(
 ): BotConfig {
   return {
     compaction: parseCompaction(value.compaction, fallback.compaction),
-    guardWorktree: typeof value.guardWorktree === "boolean"
-      ? value.guardWorktree
-      : fallback.guardWorktree,
     limitedMode: parseLimitedMode(value.limitedMode, fallback.limitedMode),
     model: typeof value.model === "string" ? value.model : fallback.model,
     provider: typeof value.provider === "string"
@@ -158,7 +155,6 @@ function requireDefaultConfig(value: Record<string, unknown>, path: string): Bot
     || typeof compaction.reserveTokens !== "number"
     || typeof compaction.keepRecentTokens !== "number"
     || typeof compaction.codexServerSide !== "boolean"
-    || typeof value.guardWorktree !== "boolean"
     || !isRecord(limitedMode)
     || !Array.isArray(limitedMode.allowedUsers)
     || !limitedMode.allowedUsers.every(entry => typeof entry === "string")
@@ -188,7 +184,6 @@ function requireDefaultConfig(value: Record<string, unknown>, path: string): Bot
       keepRecentTokens: compaction.keepRecentTokens,
       codexServerSide: compaction.codexServerSide,
     },
-    guardWorktree: value.guardWorktree,
     limitedMode: {
       allowedUsers: [...limitedMode.allowedUsers] as string[],
       allowedTools: [...limitedMode.allowedTools] as string[],

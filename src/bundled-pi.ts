@@ -39,8 +39,12 @@ function resolveBundledPiCliPath(): string {
 export async function launchBundledPiLogin(
   options: LaunchBundledPiLoginOptions,
 ): Promise<LaunchBundledPiLoginResult> {
-  const agentDir = options.agentDir.trim();
-  if (!agentDir) throw new Error("Pi login requires a non-empty agent directory");
+  const agentDir = options.agentDir;
+  const trimmedAgentDir = agentDir.trim();
+  if (!trimmedAgentDir) throw new Error("Pi login requires a non-empty agent directory");
+  if (trimmedAgentDir !== agentDir) {
+    throw new Error("Pi login agent directory must not contain surrounding whitespace");
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Pi login requires an interactive terminal with stdin and stdout attached");
   }

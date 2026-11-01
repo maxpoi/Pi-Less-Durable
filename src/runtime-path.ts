@@ -3,26 +3,24 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 function resolveDirectory(path: string): string {
-  const unquoted = path.trim().replace(/^["']|["']$/g, "");
-  if (unquoted === "~") return homedir();
-  if (unquoted.startsWith(`~${sep}`) || unquoted.startsWith("~/")) {
-    return join(homedir(), unquoted.slice(2));
+  if (path === "~") return homedir();
+  if (path.startsWith(`~${sep}`) || path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
   }
-  return resolve(unquoted);
+  return resolve(path);
 }
 
-export function resolveMultiAgentPiWorkingDirectory(workingDir?: string): string {
-  const candidate = workingDir?.trim() ? workingDir : join(homedir(), ".multiagentpi");
-  return resolveDirectory(candidate);
+export function resolveMultiAgentPiWorkingDirectory(workingDir: string): string {
+  return resolveDirectory(workingDir);
 }
 
 export function resolveMultiAgentPiExtensionsDirectory(
   extensionsDir: string | undefined,
   workingDir: string,
 ): string {
-  return extensionsDir?.trim()
-    ? resolveDirectory(extensionsDir)
-    : join(workingDir, "extensions");
+  return extensionsDir === undefined
+    ? join(workingDir, "extensions")
+    : resolveDirectory(extensionsDir);
 }
 
 /** Discover direct extension-directory children using the `<name>/index.ts` convention. */
