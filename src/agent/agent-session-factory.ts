@@ -23,7 +23,6 @@ import {
   type ConversationHistory,
 } from "./agent-session-utils.js";
 import {
-  FRAMEWORK_EXTENSION_NAME_PREFIX,
   assertConsumerInlineExtensionNames,
   createBuiltInExtensions,
   isExtensionDisabled,
@@ -223,8 +222,10 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
 
 /** @internal Implement AgentLoop.create() through resources owned by the process singleton Harness. */
 export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<AgentLoop> {
-  const hasDir = typeof options.dir === "string";
-  const hasRoom = options.room !== undefined;
+  const explicitDir = options.dir;
+  const room = options.room;
+  const hasDir = typeof explicitDir === "string";
+  const hasRoom = room !== undefined;
   if (hasDir === hasRoom) {
     throw new Error("AgentLoop.create() requires exactly one of dir or room");
   }
@@ -232,10 +233,14 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   if (!options.config || typeof options.config.cwd !== "string" || !options.config.cwd.trim()) {
     throw new Error(`AgentLoop "${options.agent.id}" requires an explicit cwd`);
   }
+  if (options.config.cwd !== options.config.cwd.trim()) {
+    throw new Error(
+      `AgentLoop "${options.agent.id}" cwd must not contain surrounding whitespace`,
+    );
+  }
 
   const harness = MultiAgentPiHarness.instance;
-  if (hasRoom) {
-    const room = options.room!;
+  if (room !== undefined) {
     harness.assertRoomAdmissionAvailable(room);
     if (room.has(agent.id)) {
       throw new Error(`Agent "${agent.id}" already exists in Room "${room.id}"`);
@@ -247,11 +252,16 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     throw new Error("Cannot create an AgentLoop while the Harness is reloading");
   }
 
-  const dir = hasDir
-    ? options.dir!
-    : agent.tag === PRIMARY_AGENT_TAG
-      ? options.room!.roomDir
-      : resolve(options.room!.roomDir, "loops", agent.id);
+  let dir: string;
+  if (typeof explicitDir === "string") {
+    dir = explicitDir;
+  } else if (room !== undefined) {
+    dir = agent.tag === PRIMARY_AGENT_TAG
+      ? room.roomDir
+      : resolve(room.roomDir, "loops", agent.id);
+  } else {
+    throw new Error("AgentLoop.create() requires exactly one of dir or room");
+  }
   const systemPrompt = createAgentSystemPrompt(options.config.systemPrompt);
   const config: AgentConfig = {
     ...options.config,
@@ -275,7 +285,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   const loopDir = hasDir
     ? resolveExplicitPersistenceDirectory(dir, "AgentLoop persistence directory")
     : resolvePersistenceDirectory(dir);
-  if (hasRoom) options.room!.assertAgentLoopDirectoryAvailable(loopDir);
+  if (room !== undefined) room.assertAgentLoopDirectoryAvailable(loopDir);
   const contextFile = join(loopDir, "context.jsonl");
   if (config.initialConversationHistory) {
     initializeConversationHistory({
@@ -285,7 +295,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     });
   }
   const sessionManager = SessionManager.open(contextFile, loopDir, cwd);
-  const logTag = hasRoom ? `${options.room!.id}/${agent.tag}` : agent.tag;
+  const logTag = room === undefined ? agent.tag : `${room.id}/${agent.tag}`;
   const piSettingsManager = settingsManager as unknown as SettingsManager;
   const { messages: initialMessages, restoredMessageCount } = prepareInitialSessionMessages(
     sessionManager,
@@ -298,7 +308,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   const {
     codemodeExtension,
     compactionStripExtension,
-    defaultExtensions,
     codexServerCompactionExtension,
     codexServerCompaction,
   } = createBuiltInExtensions({
@@ -310,9 +319,9 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     disabledExtensions,
   });
   const customTools: ToolDefinition[] = [];
-  if (hasRoom && agent.tag === PRIMARY_AGENT_TAG) {
+  if (room !== undefined && agent.tag === PRIMARY_AGENT_TAG) {
     const codeReviewOptions = {
-      room: options.room!,
+      room,
       initiatingAgentId: agent.id,
       modelRuntime,
       settingsManager,
@@ -328,9 +337,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   const promptFinalizerPath = `<inline:${promptExtensions.finalizer.name}>`;
   const codemodePath = `<inline:${codemodeExtension.name}>`;
   const compactionStripPath = `<inline:${compactionStripExtension.name}>`;
-  const defaultExtensionPaths = new Set(
-    defaultExtensions.map(extension => `<inline:${extension.name}>`),
-  );
   const codexServerCompactionPath = `<inline:${codexServerCompactionExtension.name}>`;
   const resourceLoader = new MultiAgentPiResourceLoader(
     {
@@ -343,7 +349,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
         ...inlineExtensions,
         codemodeExtension,
         compactionStripExtension,
-        ...defaultExtensions,
         codexServerCompactionExtension,
         promptExtensions.finalizer,
       ],
@@ -360,13 +365,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
         const loadedCompactionStrip = disabledExtensions.has("compaction-strip")
           ? undefined
           : result.extensions.find(extension => extension.path === compactionStripPath);
-        const loadedDefaultExtensions = defaultExtensions.flatMap(defaultExtension => {
-          const path = `<inline:${defaultExtension.name}>`;
-          const publicName = defaultExtension.name.slice(FRAMEWORK_EXTENSION_NAME_PREFIX.length);
-          if (disabledExtensions.has(publicName)) return [];
-          const loaded = result.extensions.find(extension => extension.path === path);
-          return loaded === undefined ? [] : [loaded];
-        });
         const loadedCodexServerCompaction = result.extensions.find(
           extension => extension.path === codexServerCompactionPath,
         );
@@ -375,7 +373,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
           && extension.path !== promptFinalizerPath
           && extension.path !== codemodePath
           && extension.path !== compactionStripPath
-          && !defaultExtensionPaths.has(extension.path)
           && extension.path !== codexServerCompactionPath
           && !isExtensionDisabled(extension.path, disabledExtensions)
         );
@@ -385,7 +382,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
             ...(loadedPromptComposer === undefined ? [] : [loadedPromptComposer]),
             ...(loadedCodemode === undefined ? [] : [loadedCodemode]),
             ...(loadedCompactionStrip === undefined ? [] : [loadedCompactionStrip]),
-            ...loadedDefaultExtensions,
             ...consumers,
             ...(loadedCodexServerCompaction === undefined
               ? []
@@ -405,7 +401,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       appendSystemPromptOverride: () => [],
     },
     {
-      roomId: hasRoom ? options.room!.id : undefined,
+      roomId: room?.id,
       id: agent.id,
       tag: agent.tag,
       logger,
@@ -441,10 +437,10 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     disabledExtensions,
     systemPrompt,
   });
-  if (!hasRoom) return loop;
+  if (room === undefined) return loop;
 
   try {
-    options.room!.register(loop);
+    room.register(loop);
     return loop;
   } catch (error) {
     try {
@@ -452,7 +448,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        `Room "${options.room!.id}" failed to discard agent "${agent.id}" cleanly`,
+        `Room "${room.id}" failed to discard agent "${agent.id}" cleanly`,
       );
     }
     throw error;

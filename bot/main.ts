@@ -10,7 +10,7 @@ import { BotConfigStore } from "./config-store.js";
 import { logger } from "./logger.js";
 
 async function runBot(): Promise<void> {
-  const workingDir = join(homedir(), ".multiagentpi");
+  const workingDir = join(homedir(), ".multiagentpibot");
   const configStore = new BotConfigStore(workingDir);
   const loadedConfig = configStore.initialize();
   const { limitedMode, ...harnessConfig } = loadedConfig.config;

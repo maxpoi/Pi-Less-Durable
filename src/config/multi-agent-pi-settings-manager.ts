@@ -38,7 +38,6 @@ export interface MultiAgentPiSettingsSnapshot {
 function cloneConfig(config: MultiAgentPiConfig): MultiAgentPiConfig {
   return {
     compaction: { ...config.compaction },
-    guardWorktree: config.guardWorktree,
     model: config.model,
     provider: config.provider,
     retry: { ...config.retry },
@@ -92,12 +91,6 @@ export class MultiAgentPiSettingsManager {
 
   getCodexServerCompactionEnabled(): boolean {
     return this.config.compaction.codexServerSide;
-  }
-
-  // --- Guard policy ---
-
-  getGuardWorktree(): boolean {
-    return this.config.guardWorktree;
   }
 
   // --- Retry ---

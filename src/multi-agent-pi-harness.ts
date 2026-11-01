@@ -23,8 +23,8 @@ import {
 export interface MultiAgentPiHarnessOptions {
   /** Complete in-memory configuration. The host owns any persistence. */
   readonly config: MultiAgentPiConfig;
-  /** Filesystem-canonical framework persistence root. Defaults to ~/.multiagentpi; explicit input must not be empty. */
-  readonly workingDir?: string;
+  /** Required host-owned framework persistence root. Must not be empty. */
+  readonly workingDir: string;
   /** Extension catalog root. Defaults to <workingDir>/extensions. */
   readonly extensionsDir?: string;
   /** Host-owned model/provider/auth runtime. MultiAgentPiHarness borrows but never closes it. */
@@ -58,8 +58,9 @@ export class MultiAgentPiHarness {
       throw new Error("MultiAgentPiHarness is a process singleton and already exists");
     }
 
-    if (options.workingDir !== undefined) {
-      assertExplicitPersistencePath(options.workingDir, "Harness working directory");
+    assertExplicitPersistencePath(options.workingDir, "Harness working directory");
+    if (options.extensionsDir !== undefined) {
+      assertExplicitPersistencePath(options.extensionsDir, "Harness extensions directory");
     }
     this.#workingDir = resolvePersistenceDirectory(
       resolveMultiAgentPiWorkingDirectory(options.workingDir),

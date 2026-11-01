@@ -13,7 +13,7 @@ async function login(): Promise<void> {
 
   const provider = providerId?.trim();
   const loginCommand = provider ? `/login ${provider}` : "/login";
-  const agentDir = join(homedir(), ".multiagentpi");
+  const agentDir = join(homedir(), ".multiagentpibot");
   logger.info(
     "Opening bundled Pi",
     `Run ${loginCommand} inside Pi, then /quit when authentication completes.`,

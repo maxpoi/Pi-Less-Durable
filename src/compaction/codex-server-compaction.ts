@@ -145,7 +145,14 @@ function resolveCheckpoint(branch: readonly SessionEntry[]): CheckpointState {
 }
 
 function normalizeEndpoint(baseUrl: string | undefined): string {
-	const url = new URL(baseUrl?.trim() || DEFAULT_CODEX_BASE_URL);
+	if (baseUrl !== undefined) {
+		const trimmed = baseUrl.trim();
+		if (!trimmed) throw new Error("Codex endpoint must not be empty");
+		if (trimmed !== baseUrl) {
+			throw new Error("Codex endpoint must not contain surrounding whitespace");
+		}
+	}
+	const url = new URL(baseUrl ?? DEFAULT_CODEX_BASE_URL);
 	if (url.username || url.password || url.search) throw new Error("Codex endpoint contains unsupported credentials or query parameters");
 	const basePath = url.pathname.replace(/\/+$/, "");
 	url.pathname = basePath.endsWith("/codex/responses")
@@ -159,8 +166,11 @@ function normalizeEndpoint(baseUrl: string | undefined): string {
 
 function extractAccountId(token: string): string {
 	const parts = token.split(".");
-	if (parts.length !== 3) throw new Error("Codex credential is not a JWT");
-	const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
+	const encodedPayload = parts[1];
+	if (parts.length !== 3 || encodedPayload === undefined) {
+		throw new Error("Codex credential is not a JWT");
+	}
+	const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as Record<string, unknown>;
 	const auth = payload[ACCOUNT_CLAIM_PATH];
 	const accountId = isRecord(auth) ? auth.chatgpt_account_id : undefined;
 	if (!isNonEmptyString(accountId)) throw new Error("Codex credential has no account identity");

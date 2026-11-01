@@ -143,10 +143,11 @@ async function readCompletedCheckpoint(
 	if (checkpoints.length !== candidates.length) {
 		throw new Error("Codex compaction response contained a malformed encrypted checkpoint");
 	}
-	if (checkpoints.length !== 1) {
+	const checkpoint = checkpoints[0];
+	if (checkpoints.length !== 1 || checkpoint === undefined) {
 		throw new Error(`Codex compaction response contained ${checkpoints.length} encrypted checkpoints; expected exactly one`);
 	}
-	return structuredClone(checkpoints[0]!);
+	return structuredClone(checkpoint);
 }
 
 async function logRawResponseBody(response: Response, logger: CodexCompactionLogger): Promise<void> {

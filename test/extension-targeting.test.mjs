@@ -17,7 +17,6 @@ import {
 const COMPACTION_EVENT = "session_before_compact";
 const CONFIG = {
   compaction: DEFAULT_MULTI_AGENT_PI_COMPACTION_SETTINGS,
-  guardWorktree: true,
   model: "gpt-5.6-sol",
   provider: "openai-codex",
   retry: DEFAULT_MULTI_AGENT_PI_RETRY_SETTINGS,

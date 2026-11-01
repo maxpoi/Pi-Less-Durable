@@ -129,7 +129,8 @@ function assertRegistration(
 
   const target = registration.target;
   const keys = Object.keys(target);
-  if (keys.length !== 1 || !["id", "tag"].includes(keys[0]!)) {
+  const key = keys[0];
+  if (keys.length !== 1 || key === undefined || !["id", "tag"].includes(key)) {
     throw new Error(
       "MultiAgentPi extension target requires exactly one of { id } or { tag }",
     );
@@ -148,7 +149,7 @@ function matches(
   context: MultiAgentPiResourceLoaderContext,
 ): boolean {
   if ("id" in target) return target.id === context.id;
-  return target.tag.trim() === context.tag;
+  return target.tag === context.tag;
 }
 
 function createTargetedSetupError(
@@ -182,9 +183,9 @@ export function register(
     return Promise.resolve(
       registration.setup(pi, createAgentLoopContext(context)),
     ).catch(error => {
-      throw createTargetedSetupError(registration.id.trim(), context, error);
+      throw createTargetedSetupError(registration.id, context, error);
     });
   } catch (error) {
-    throw createTargetedSetupError(registration.id.trim(), context, error);
+    throw createTargetedSetupError(registration.id, context, error);
   }
 }

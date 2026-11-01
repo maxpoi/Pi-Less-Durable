@@ -15,8 +15,17 @@ export function resolvePersistenceDirectory(path: string): string {
 }
 
 /** Validate one consumer-supplied persistence path before applying defaults or resolution. */
-export function assertExplicitPersistencePath(path: string, label: string): void {
-  if (!path.trim()) throw new Error(`${label} must not be empty`);
+export function assertExplicitPersistencePath(
+  path: unknown,
+  label: string,
+): asserts path is string {
+  if (path === undefined) throw new Error(`${label} is required`);
+  if (typeof path !== "string") throw new Error(`${label} must be a string`);
+  const trimmed = path.trim();
+  if (!trimmed) throw new Error(`${label} must not be empty`);
+  if (trimmed !== path) {
+    throw new Error(`${label} must not contain surrounding whitespace`);
+  }
 }
 
 /** Resolve a consumer-supplied persistence directory after validating explicit input. */

@@ -44,31 +44,26 @@ function ensureSessionsDirectory(roomDir: string): string {
   return sessionsDir;
 }
 
-function isValidSessionName(name: string): boolean {
-  const trimmed = name.trim();
-  return trimmed.length > 0 && !trimmed.includes("/") && !trimmed.includes("\\");
-}
-
 function archiveDirectoryName(
-  sessionName: string | undefined,
+  roomId: string,
   timestamp: string,
   attempt: number,
 ): string {
-  if (attempt === 0) return sessionName ? `${sessionName}.${timestamp}` : timestamp;
-  return `${sessionName ?? "archive"}-${attempt}.${timestamp}`;
+  if (attempt === 0) return `${roomId}.${timestamp}`;
+  return `${roomId}-${attempt}.${timestamp}`;
 }
 
 function archiveAttemptFromDirectoryName(
   directoryName: string,
-  sessionName: string | undefined,
+  roomId: string,
   timestamp: string,
 ): number | undefined {
-  if (directoryName === archiveDirectoryName(sessionName, timestamp, 0)) return 0;
+  if (directoryName === archiveDirectoryName(roomId, timestamp, 0)) return 0;
   const suffix = `.${timestamp}`;
   if (!directoryName.endsWith(suffix)) return undefined;
 
   const prefix = directoryName.slice(0, -suffix.length);
-  const duplicatePrefix = `${sessionName ?? "archive"}-`;
+  const duplicatePrefix = `${roomId}-`;
   if (!prefix.startsWith(duplicatePrefix)) return undefined;
 
   const attempt = Number(prefix.slice(duplicatePrefix.length));
@@ -77,12 +72,12 @@ function archiveAttemptFromDirectoryName(
 
 function findNextAttempt(
   sessionsDir: string,
-  sessionName: string | undefined,
+  roomId: string,
   timestamp: string,
 ): number {
   let maxAttempt = -1;
   for (const directoryName of readdirSync(sessionsDir)) {
-    const attempt = archiveAttemptFromDirectoryName(directoryName, sessionName, timestamp);
+    const attempt = archiveAttemptFromDirectoryName(directoryName, roomId, timestamp);
     if (attempt !== undefined && attempt > maxAttempt) maxAttempt = attempt;
   }
   return maxAttempt + 1;
@@ -90,12 +85,12 @@ function findNextAttempt(
 
 function createArchiveDirectory(
   sessionsDir: string,
-  sessionName: string | undefined,
+  roomId: string,
   timestamp: string,
 ): ArchiveDirectory {
   for (let retry = 0; retry < 10; retry++) {
-    const attempt = findNextAttempt(sessionsDir, sessionName, timestamp);
-    const name = archiveDirectoryName(sessionName, timestamp, attempt);
+    const attempt = findNextAttempt(sessionsDir, roomId, timestamp);
+    const name = archiveDirectoryName(roomId, timestamp, attempt);
     const path = join(sessionsDir, name);
     if (pathExistsNoFollow(path)) continue;
     try {
@@ -115,7 +110,7 @@ function renameIfRealFile(source: string, destination: string): void {
 /** Archive the settled active Room session after all registered AgentLoops are destroyed. */
 export function archiveRoomSession(
   roomDir: string,
-  sessionName?: string,
+  roomId: string,
 ): string | undefined {
   const contextFile = join(roomDir, CONTEXT_FILE);
   if (pathExistsNoFollow(contextFile) && !isRealFile(contextFile)) {
@@ -137,12 +132,8 @@ export function archiveRoomSession(
   if (!hasArchivableState) return undefined;
 
   const sessionsDir = ensureSessionsDirectory(roomDir);
-  const normalizedName = sessionName?.trim();
-  const safeName = normalizedName && isValidSessionName(normalizedName)
-    ? normalizedName
-    : undefined;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const archive = createArchiveDirectory(sessionsDir, safeName, timestamp);
+  const archive = createArchiveDirectory(sessionsDir, roomId, timestamp);
 
   renameIfRealFile(contextFile, join(archive.path, CONTEXT_FILE));
   for (const fileName of ARCHIVED_COMPANION_FILES) {

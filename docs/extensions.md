@@ -2,7 +2,7 @@
 
 ## Native Pi extensions
 
-Harness owns one source catalog discovered from direct `<extensionsDir>/<name>/index.ts` children. extensionsDir` defaults to `<workingDir>/extensions`, which is `~/.multiagentpi/extensions` when neither path is customized.
+Harness owns one source catalog discovered from direct `<extensionsDir>/<name>/index.ts` children. The host must provide `workingDir`; `extensionsDir` defaults to `<workingDir>/extensions`.
 
 Use direct native Pi registration for behavior shared by every loop receiving the source:
 
@@ -62,11 +62,12 @@ const unsubscribe = multiAgentPi.on("agent_round_end", (event, context) => {
 `extensionsOverride` preserves consumer relative order while placing framework behavior around the consumer block:
 
 ```text
-codemode
+system prompt composer
+→ codemode
 → compaction strip
-→ framework guards and diagnostics
 → consumer extensions
 → Codex server compaction
+→ system prompt finalizer
 ```
 
 Inline extension names beginning with `multi-agent-pi-` are reserved for framework-owned
@@ -93,6 +94,7 @@ A reload can only happen if all levels below are idle. For example, a room level
 - Reloadable explicit source materialization: `src/multi-agent-pi/extension-registry.ts`
 - Runtime path resolution and extension discovery: `src/runtime-path.ts`
 - Framework-owned inline extensions: `src/extensions/built-in-extensions.ts`
+- Opt-in extension examples: `examples/extensions/`
 - Per-AgentLoop temporary extension policy: `src/agent/agent-loop.ts`
 - Agent identity binding and targeted setup: `src/multi-agent-pi/extension-registry.ts`
 - Installed Pi resource-loader and dispatch contracts: `@earendil-works/pi-coding-agent`
