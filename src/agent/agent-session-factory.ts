@@ -2,15 +2,18 @@ import { join, resolve } from "node:path";
 import {
   Agent,
   type AgentMessage,
+  type AgentTool,
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import {
+  getCurrentSystemMessage,
+  type Api,
+  type Model,
+} from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
   type CreateAgentSessionResult,
-  type ExtensionRunner,
-  type InlineExtension,
   type ModelRuntime,
   SessionManager,
   type SettingsManager,
@@ -22,24 +25,11 @@ import {
   initializeConversationHistory,
   type ConversationHistory,
 } from "./agent-session-utils.js";
-import {
-  assertConsumerInlineExtensionNames,
-  createBuiltInExtensions,
-  isExtensionDisabled,
-} from "../extensions/built-in-extensions.js";
 import { prepareInitialSessionMessages } from "./runtime-maintainance/context-maintenance.js";
 import {
-  createPiExtensionAgentHooks,
-  createPiExtensionStreamFn,
-} from "./to-pi-bindings/pi-extension-bindings.js";
-import { createProviderStreamFn } from "./to-pi-bindings/provider-stream.js";
-import {
   createAgentSystemPrompt,
-  createAgentSystemPromptExtensions,
-  resolveAgentSystemPromptMain,
   type AgentSystemPrompt,
 } from "./system-prompt.js";
-import type { AgentLogger } from "../logger/logger.js";
 import type { CodexServerCompactionController } from "../compaction/codex-server-compaction.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
 import { MultiAgentPiResourceLoader } from "../multi-agent-pi/extension-registry.js";
@@ -51,13 +41,25 @@ import {
 import {
   PRIMARY_AGENT_TAG,
   normalizeAgentIdentity,
-  type AgentIdentity,
 } from "../room/loop-manager.js";
+import { BackgroundTaskManager } from "../room/background-task-manager.js";
 import {
-  createCancelCodeReviewTool,
-  createCodeReviewTool,
-} from "../tools/code-review.js";
+  createAgentExtensionRuntime,
+  createAgentExtensions,
+  type AgentLoopExtensionSources,
+} from "./agent-session-factory-helper/agent-extensions.js";
+import {
+  createAgentTools,
+  PI_DEFAULT_ACTIVE_TOOL_NAMES,
+  type AgentToolConfig,
+} from "./agent-session-factory-helper/agent-tools.js";
 
+export type {
+  AgentLoopExtensionSources,
+} from "./agent-session-factory-helper/agent-extensions.js";
+export type {
+  AgentToolConfig,
+} from "./agent-session-factory-helper/agent-tools.js";
 
 /** Consumer-applied configuration for constructing one agent runtime. */
 export interface AgentConfig {
@@ -66,16 +68,10 @@ export interface AgentConfig {
   readonly model?: Model<Api>;
   readonly thinkingLevel?: ThinkingLevel;
   readonly initialConversationHistory?: ConversationHistory;
-  /** Native Pi allowlist applied to registered, active, codemode, and deferred tools. */
-  readonly allowedToolNames?: readonly string[];
+  /** Tool registration, filtering, and implementation overrides. */
+  readonly toolConfig?: AgentToolConfig;
   /** Mutable structured prompt state owned and exposed by the created AgentLoop. */
   readonly systemPrompt?: AgentSystemPrompt;
-}
-
-/** Native Pi extension sources selected for one AgentLoop. */
-export interface AgentLoopExtensionSources {
-  readonly extensionFiles?: readonly string[];
-  readonly inlineExtensions?: readonly InlineExtension[];
 }
 
 interface CreateNativeAgentSessionOptions {
@@ -88,6 +84,7 @@ interface CreateNativeAgentSessionOptions {
   readonly resourceLoader: MultiAgentPiResourceLoader;
   readonly codexServerCompaction: CodexServerCompactionController;
   readonly customTools: readonly ToolDefinition[];
+  readonly piBaseToolOverrides?: Readonly<Record<string, AgentTool>>;
 }
 
 /**
@@ -108,8 +105,11 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
     resourceLoader,
     codexServerCompaction,
     customTools,
+    piBaseToolOverrides,
   } = options;
   const sessionContext = sessionManager.buildSessionContext();
+  const hasPersistedToolLoadout = getCurrentSystemMessage(sessionContext.messages) !== undefined;
+  const initialAdditionalActiveToolNames = config.toolConfig?.initialAdditionalActiveToolNames ?? [];
   const branchEntries = sessionManager.getBranch();
   const hasThinkingEntry = branchEntries.some(
     entry => entry.type === "thinking_level_change",
@@ -143,19 +143,11 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
   thinkingLevel ??= settingsManager.getDefaultThinkingLevel() as ThinkingLevel;
   thinkingLevel = model === undefined ? "off" : clampThinkingLevel(model, thinkingLevel);
 
-  const extensionRunnerRef: { current?: ExtensionRunner } = {};
-
-  const rawStreamFn = createProviderStreamFn(modelRuntime, settingsManager);
-  const mainStreamFn = createPiExtensionStreamFn(rawStreamFn, extensionRunnerRef);
-  const extensionAgentHooks = createPiExtensionAgentHooks(
+  const {
     extensionRunnerRef,
-    undefined,
-    undefined,
-    (payload, requestModel) => codexServerCompaction.rewriteProviderPayload(
-      payload,
-      requestModel,
-    ),
-  );
+    mainStreamFn,
+    extensionAgentHooks,
+  } = createAgentExtensionRuntime(codexServerCompaction);
   const agent = new Agent({
     initialState: {
       systemPrompt: "",
@@ -208,10 +200,30 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
     modelRuntime,
     extensionRunnerRef,
     customTools: [...customTools],
-    ...(config.allowedToolNames === undefined
+    ...(hasPersistedToolLoadout
       ? {}
-      : { allowedToolNames: [...config.allowedToolNames] }),
+      : {
+          initialActiveToolNames: [
+            ...PI_DEFAULT_ACTIVE_TOOL_NAMES,
+            ...initialAdditionalActiveToolNames,
+          ],
+        }),
+    ...(config.toolConfig?.allowedToolNames === undefined
+      ? {}
+      : { allowedToolNames: [...config.toolConfig.allowedToolNames] }),
+    ...(config.toolConfig?.excludedToolNames === undefined
+      ? {}
+      : { excludedToolNames: [...config.toolConfig.excludedToolNames] }),
+    ...(piBaseToolOverrides === undefined
+      ? {}
+      : { baseToolsOverride: { ...piBaseToolOverrides } }),
   });
+  if (hasPersistedToolLoadout && initialAdditionalActiveToolNames.length > 0) {
+    session.setActiveToolsByName([
+      ...session.getActiveToolNames(),
+      ...initialAdditionalActiveToolNames,
+    ]);
+  }
 
   return {
     session,
@@ -268,20 +280,10 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     cwd: resolve(options.config.cwd),
     systemPrompt,
   };
-  const extensionFiles = [...new Set(
-    (options.extensionSources?.extensionFiles ?? []).map(extensionPath =>
-      resolve(process.cwd(), extensionPath)
-    ),
-  )];
-  const inlineExtensions = [...(options.extensionSources?.inlineExtensions ?? [])];
-  const harnessExtensionFiles = harness.extensionFiles;
-  const workingDir = harness.workingDir;
   const modelRuntime = harness.modelRuntime;
   const settingsManager = harness.settings;
   const logger = harness.logger;
   const cwd = config.cwd;
-  const disabledExtensions = new Set<string>();
-  assertConsumerInlineExtensionNames(inlineExtensions);
   const loopDir = hasDir
     ? resolveExplicitPersistenceDirectory(dir, "AgentLoop persistence directory")
     : resolvePersistenceDirectory(dir);
@@ -296,7 +298,6 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   }
   const sessionManager = SessionManager.open(contextFile, loopDir, cwd);
   const logTag = room === undefined ? agent.tag : `${room.id}/${agent.tag}`;
-  const piSettingsManager = settingsManager as unknown as SettingsManager;
   const { messages: initialMessages, restoredMessageCount } = prepareInitialSessionMessages(
     sessionManager,
     logger,
@@ -305,110 +306,46 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     logger.info(`[${logTag}] Loaded ${restoredMessageCount} messages from context.jsonl`);
   }
 
+  const backgroundTasks = new BackgroundTaskManager({
+    ...(room === undefined ? {} : { roomId: room.id }),
+    agentId: agent.id,
+    logger,
+  });
+  let boundLoop: AgentLoop | undefined;
+  const getInitiatingLoop = (): AgentLoop => {
+    if (boundLoop === undefined) {
+      throw new Error(`AgentLoop "${agent.id}" is not bound`);
+    }
+    return boundLoop;
+  };
   const {
-    codemodeExtension,
-    compactionStripExtension,
-    codexServerCompactionExtension,
-    codexServerCompaction,
-  } = createBuiltInExtensions({
-    agent,
-    sessionManager,
+    customTools,
+    piBaseToolOverrides,
+    defaultPiBaseToolDefinitions,
+  } = createAgentTools({
+    config: config.toolConfig ?? {},
+    cwd,
+    backgroundTasks,
+    getInitiatingLoop,
     modelRuntime,
     settingsManager,
     logger,
-    disabledExtensions,
   });
-  const customTools: ToolDefinition[] = [];
-  if (room !== undefined && agent.tag === PRIMARY_AGENT_TAG) {
-    const codeReviewOptions = {
-      room,
-      initiatingAgentId: agent.id,
-      modelRuntime,
-      settingsManager,
-      logger,
-    };
-    customTools.push(
-      createCodeReviewTool(codeReviewOptions),
-      createCancelCodeReviewTool(codeReviewOptions),
-    );
-  }
-  const promptExtensions = createAgentSystemPromptExtensions(systemPrompt);
-  const promptComposerPath = `<inline:${promptExtensions.composer.name}>`;
-  const promptFinalizerPath = `<inline:${promptExtensions.finalizer.name}>`;
-  const codemodePath = `<inline:${codemodeExtension.name}>`;
-  const compactionStripPath = `<inline:${compactionStripExtension.name}>`;
-  const codexServerCompactionPath = `<inline:${codexServerCompactionExtension.name}>`;
-  const resourceLoader = new MultiAgentPiResourceLoader(
-    {
-      cwd,
-      agentDir: workingDir,
-      settingsManager: piSettingsManager,
-      additionalExtensionPaths: [...extensionFiles],
-      extensionFactories: [
-        promptExtensions.composer,
-        ...inlineExtensions,
-        codemodeExtension,
-        compactionStripExtension,
-        codexServerCompactionExtension,
-        promptExtensions.finalizer,
-      ],
-      extensionsOverride: result => {
-        const loadedPromptComposer = result.extensions.find(
-          extension => extension.path === promptComposerPath,
-        );
-        const loadedPromptFinalizer = result.extensions.find(
-          extension => extension.path === promptFinalizerPath,
-        );
-        const loadedCodemode = result.extensions.find(
-          extension => extension.path === codemodePath,
-        );
-        const loadedCompactionStrip = disabledExtensions.has("compaction-strip")
-          ? undefined
-          : result.extensions.find(extension => extension.path === compactionStripPath);
-        const loadedCodexServerCompaction = result.extensions.find(
-          extension => extension.path === codexServerCompactionPath,
-        );
-        const consumers = result.extensions.filter(extension =>
-          extension.path !== promptComposerPath
-          && extension.path !== promptFinalizerPath
-          && extension.path !== codemodePath
-          && extension.path !== compactionStripPath
-          && extension.path !== codexServerCompactionPath
-          && !isExtensionDisabled(extension.path, disabledExtensions)
-        );
-        return {
-          ...result,
-          extensions: [
-            ...(loadedPromptComposer === undefined ? [] : [loadedPromptComposer]),
-            ...(loadedCodemode === undefined ? [] : [loadedCodemode]),
-            ...(loadedCompactionStrip === undefined ? [] : [loadedCompactionStrip]),
-            ...consumers,
-            ...(loadedCodexServerCompaction === undefined
-              ? []
-              : [loadedCodexServerCompaction]),
-            ...(loadedPromptFinalizer === undefined ? [] : [loadedPromptFinalizer]),
-          ],
-        };
-      },
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      systemPrompt: resolveAgentSystemPromptMain(systemPrompt.main),
-      systemPromptOverride: () => resolveAgentSystemPromptMain(systemPrompt.main),
-      appendSystemPrompt: [],
-      appendSystemPromptOverride: () => [],
-    },
-    {
-      roomId: room?.id,
-      id: agent.id,
-      tag: agent.tag,
-      logger,
-    },
-    harnessExtensionFiles,
-  );
-  await resourceLoader.reload();
+  const {
+    resourceLoader,
+    codexServerCompaction,
+    disabledExtensions,
+  } = await createAgentExtensions({
+    agent,
+    ...(room === undefined ? {} : { roomId: room.id }),
+    cwd,
+    ...(options.extensionSources === undefined
+      ? {}
+      : { extensionSources: options.extensionSources }),
+    systemPrompt,
+    defaultPiBaseToolDefinitions,
+    sessionManager,
+  });
 
   const result = createPiAgentSession({
     cwd,
@@ -420,6 +357,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     resourceLoader,
     codexServerCompaction,
     customTools,
+    ...(piBaseToolOverrides === undefined ? {} : { piBaseToolOverrides }),
   });
   if (result.session.model === undefined) {
     logger.warning(
@@ -432,11 +370,13 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     dir: loopDir,
     identity: agent,
     session: result.session,
+    backgroundTasks,
     settingsManager,
     logger,
     disabledExtensions,
     systemPrompt,
   });
+  boundLoop = loop;
   if (room === undefined) return loop;
 
   try {

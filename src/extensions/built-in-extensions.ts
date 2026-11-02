@@ -1,7 +1,6 @@
 import { basename, dirname, extname } from "node:path";
 import {
   createCodemodeExtension,
-  type AgentSession,
   type ExtensionFactory,
   type InlineExtension,
   type ModelRuntime,
@@ -144,12 +143,4 @@ export function assertConsumerInlineExtensionNames(
     `Consumer inline extension name "${reserved.name}" is reserved; names beginning with `
       + `"${FRAMEWORK_EXTENSION_NAME_PREFIX}" are owned by Pi-Less-Durable`,
   );
-}
-
-/** Activate the framework-provided Codemode tool without owning a Pi event handler. */
-export function activateCodemode(session: AgentSession): void {
-  if (!session.getAllTools().some(tool => tool.name === CODEMODE_EXTENSION_NAME)) return;
-  const activeTools = session.getActiveToolNames();
-  if (activeTools.includes(CODEMODE_EXTENSION_NAME)) return;
-  session.setActiveToolsByName([...activeTools, CODEMODE_EXTENSION_NAME]);
 }

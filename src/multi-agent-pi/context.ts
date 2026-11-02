@@ -18,8 +18,10 @@ export interface RoomContext {
   readonly roomId: RoomId;
 }
 
-/** Current Room and task identity available throughout one background task. */
-export interface BackgroundTaskRunContext extends RoomContext {
+/** Owner and task identity available throughout one background task. */
+export interface BackgroundTaskRunContext {
+  readonly roomId: RoomId | undefined;
+  readonly agentId: string | undefined;
   readonly id: string;
   readonly label: string;
   readonly signal: AbortSignal;
@@ -59,6 +61,7 @@ export function createBackgroundTaskRunContext(
 ): BackgroundTaskRunContext {
   return Object.freeze({
     roomId: source.roomId,
+    agentId: source.agentId,
     id: source.id,
     label: source.label,
     signal: source.signal,

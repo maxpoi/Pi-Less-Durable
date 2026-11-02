@@ -3,7 +3,11 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentSession, CompactionResult } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  CompactionResult,
+  ToolInfo,
+} from "@earendil-works/pi-coding-agent";
 import type {
   AgentLoopContext,
   MultiAgentPiHandler,
@@ -13,11 +17,11 @@ import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-setti
 import { MultiAgentPiResourceLoader } from "../multi-agent-pi/extension-registry.js";
 import type { AgentLogger } from "../logger/logger.js";
 import type { Room } from "../room/room.js";
+import { BackgroundTaskManager } from "../room/background-task-manager.js";
 import type { RoomId } from "../room/room-types.js";
 import {
   CODEMODE_EXTENSION_NAME,
   CODEX_SERVER_COMPACTION_EXTENSION_NAME,
-  activateCodemode,
   isExtensionDisabled,
 } from "../extensions/built-in-extensions.js";
 import {
@@ -100,6 +104,7 @@ interface AgentLoopOptions {
   readonly dir: string;
   readonly identity: AgentIdentity;
   readonly session: AgentSession;
+  readonly backgroundTasks: BackgroundTaskManager;
   readonly settingsManager: MultiAgentPiSettingsManager;
   readonly logger: AgentLogger;
   readonly disabledExtensions: Set<string>;
@@ -126,6 +131,7 @@ export class AgentLoop {
   readonly name: string;
   readonly tag: string;
   readonly session: AgentSession;
+  readonly backgroundTasks: BackgroundTaskManager;
   readonly systemPrompt: AgentSystemPrompt;
 
   readonly #dir: string;
@@ -335,7 +341,9 @@ export class AgentLoop {
   }
 
   get isBusy(): boolean {
-    return this.#activeLifecycle !== undefined || !this.session.isIdle;
+    return this.#activeLifecycle !== undefined
+      || !this.session.isIdle
+      || this.backgroundTasks.activeCount > 0;
   }
 
   get stopReason(): string {
@@ -354,6 +362,11 @@ export class AgentLoop {
     return Object.freeze([...this.#disabledExtensions].sort());
   }
 
+  /** Return every tool in the native AgentSession's effective post-filter registry. */
+  getToolList(): readonly ToolInfo[] {
+    return this.session.getAllTools();
+  }
+
   setActiveToolsByName(toolNames: readonly string[]): void {
     this.#assertUsable("set active tools on");
     this.session.setActiveToolsByName([...toolNames]);
@@ -369,6 +382,7 @@ export class AgentLoop {
     this.name = options.identity.name;
     this.tag = options.identity.tag;
     this.session = options.session;
+    this.backgroundTasks = options.backgroundTasks;
     this.systemPrompt = options.systemPrompt;
     this.#settingsManager = options.settingsManager;
     this.#logger = options.logger;
@@ -398,12 +412,12 @@ export class AgentLoop {
   /** @internal Assign Room identity when ownership transfers through Room.register(). */
   setRoomId(roomId: RoomId): void {
     this.#resourceLoader().setRoomId(roomId);
+    this.backgroundTasks.setRoomId(roomId);
   }
 
   async #bindSession(session: AgentSession): Promise<void> {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
-    activateCodemode(session);
 
     this.#unsubscribe = session.subscribe(event => {
       this.#abortInterruptedRequestIfNeeded();
@@ -746,6 +760,11 @@ export class AgentLoop {
 
   #assertSessionReloadAvailable(operation: string): void {
     this.#assertLifecycleAvailable("reload");
+    if (this.backgroundTasks.activeCount > 0) {
+      throw new Error(
+        `Cannot ${operation} agent loop "${this.id}" while background tasks are active`,
+      );
+    }
     if (this.#promptQueue.length > 0) {
       throw new Error(
         `Cannot ${operation} agent loop "${this.id}" while its prompt queue is not empty`,
@@ -762,6 +781,8 @@ export class AgentLoop {
 
   async #destroy(): Promise<void> {
     const errors: unknown[] = [];
+    this.backgroundTasks.closeAdmission();
+    this.backgroundTasks.abortAll("AgentLoop destroyed");
     this.#promptQueue.length = 0;
     const settle = async (operation: () => Promise<void> | void): Promise<void> => {
       try {
@@ -782,6 +803,8 @@ export class AgentLoop {
         await activeLifecycle.promise;
       });
     }
+    await settle(() => this.backgroundTasks.abortAllAndWait("AgentLoop destroyed"));
+    this.#promptQueue.length = 0;
     await settle(() => this.session.waitForIdle());
     await settle(() => {
       clearAgentWaitingHeartbeat(this.#eventHandlerState);

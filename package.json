@@ -33,6 +33,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@computer-use/nut-js": "4.2.0",
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-agent-core": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
@@ -41,7 +42,8 @@
     "@earendil-works/pi-durable": "1.1.0",
     "@earendil-works/pi-mcp": "1.1.0",
     "@earendil-works/pi-telemetry": "1.1.0",
-    "@earendil-works/pi-tui": "1.1.0"
+    "@earendil-works/pi-tui": "1.1.0",
+    "sharp": "0.34.5"
   },
   "devDependencies": {
     "@types/node": "24.3.0",

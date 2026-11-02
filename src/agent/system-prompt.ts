@@ -3,7 +3,10 @@ import type {
   ExtensionFactory,
   NormalizedBuildSystemPromptOptions,
   ToolInfo,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+
+type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 export interface AgentSystemPrompt {
   main: string;
@@ -46,6 +49,7 @@ function renderToolsSection(
   options: NormalizedBuildSystemPromptOptions,
   selectedTools: readonly string[],
   registeredTools: readonly ToolInfo[],
+  defaultPiBaseTools: ReadonlyMap<string, AnyToolDefinition>,
 ): string {
   const toolsByName = new Map(registeredTools.map(tool => [tool.name, tool] as const));
   const hiddenTools = new Set(options.hiddenTools);
@@ -54,8 +58,13 @@ function renderToolsSection(
   for (const name of new Set(selectedTools)) {
     const tool = toolsByName.get(name);
     if (tool === undefined || tool.exposure === "hidden" || hiddenTools.has(name)) continue;
-    const snippet = options.toolSnippets[name] ?? "";
-    const guidelines = options.toolGuidelines[name] ?? [];
+    const defaultPiTool = tool.sourceInfo.source === "builtin"
+      ? defaultPiBaseTools.get(name)
+      : undefined;
+    const snippet = options.toolSnippets[name] ?? defaultPiTool?.promptSnippet ?? "";
+    const guidelines = options.toolGuidelines[name]
+      ?? defaultPiTool?.promptGuidelines
+      ?? [];
     if (!snippet && guidelines.length === 0) continue;
 
     lines.push(`- **${name}**:${snippet ? ` ${snippet}` : ""}`);
@@ -76,8 +85,14 @@ function refreshFrameworkSections(
   options: NormalizedBuildSystemPromptOptions,
   selectedTools: readonly string[],
   registeredTools: readonly ToolInfo[],
+  defaultPiBaseTools: ReadonlyMap<string, AnyToolDefinition>,
 ): { tools: string; skills: string } {
-  const tools = renderToolsSection(options, selectedTools, registeredTools);
+  const tools = renderToolsSection(
+    options,
+    selectedTools,
+    registeredTools,
+    defaultPiBaseTools,
+  );
   const skills = renderSkillsSection();
   systemPrompt.sections.tools = tools;
   systemPrompt.sections.skills = skills;
@@ -88,12 +103,14 @@ function applyBaseSystemPrompt(
   systemPrompt: AgentSystemPrompt,
   options: NormalizedBuildSystemPromptOptions,
   registeredTools: readonly ToolInfo[],
+  defaultPiBaseTools: ReadonlyMap<string, AnyToolDefinition>,
 ): void {
   refreshFrameworkSections(
     systemPrompt,
     options,
     options.selectedTools,
     registeredTools,
+    defaultPiBaseTools,
   );
   delete options.forceSystemPrompt;
   options.customPrompt = resolveAgentSystemPromptMain(systemPrompt.main);
@@ -113,7 +130,11 @@ function stringArraysEqual(
 
 export function createAgentSystemPromptExtensions(
   systemPrompt: AgentSystemPrompt,
+  defaultPiBaseToolDefinitions: readonly AnyToolDefinition[] = [],
 ): AgentSystemPromptExtensions {
+  const defaultPiBaseTools = new Map(
+    defaultPiBaseToolDefinitions.map(definition => [definition.name, definition]),
+  );
   let selectedToolsBeforeHandlers: readonly string[] | undefined;
 
   const composer: NamedSystemPromptExtension = {
@@ -126,6 +147,7 @@ export function createAgentSystemPromptExtensions(
           systemPrompt,
           event.systemPromptOptions,
           pi.getAllTools(),
+          defaultPiBaseTools,
         );
       });
     },
@@ -148,6 +170,7 @@ export function createAgentSystemPromptExtensions(
           event.systemPromptOptions,
           selectedTools,
           pi.getAllTools(),
+          defaultPiBaseTools,
         );
         event.systemPromptOptions.skills = [];
         event.systemPromptOptions.sections.tools = sections.tools;

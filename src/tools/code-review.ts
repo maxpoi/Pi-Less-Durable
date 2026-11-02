@@ -21,7 +21,6 @@ import {
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
 import type { AgentLogger } from "../logger/logger.js";
 import type { BackgroundTaskManager } from "../room/background-task-manager.js";
-import type { Room } from "../room/room.js";
 
 const CodeReviewParams = Type.Object({
   summary: Type.String({
@@ -38,8 +37,8 @@ export interface CodeReviewResultDetails {
 }
 
 export interface CreateCodeReviewToolOptions {
-  readonly room: Room;
-  readonly initiatingAgentId: string;
+  readonly backgroundTasks: BackgroundTaskManager;
+  readonly getInitiatingLoop: () => AgentLoop;
   readonly modelRuntime: ModelRuntime;
   readonly settingsManager: MultiAgentPiSettingsManager;
   readonly logger: AgentLogger;
@@ -169,6 +168,7 @@ async function prepareReviewContext(
 
 async function runCodeReview(
   options: CreateCodeReviewToolOptions,
+  initiatingLoop: AgentLoop,
   params: { readonly summary: string },
   snapshot: CodeReviewSnapshot,
   signal: AbortSignal,
@@ -189,15 +189,16 @@ async function runCodeReview(
     const context = await prepareReviewContext(options, snapshot, signal);
     signal.throwIfAborted();
 
+    const scratchDir = join(initiatingLoop.dir, "scratch");
     reviewLoop = await createCodeReviewAgentLoop({
-      room: options.room,
+      persistenceRoot: join(scratchDir, "code-review-loops"),
       cwd: snapshot.cwd,
       model: snapshot.model,
     });
     signal.addEventListener("abort", abortReview, { once: true });
     signal.throwIfAborted();
     writeDebug(
-      join(options.room.roomDir, "scratch"),
+      scratchDir,
       context,
       [
         CODE_REVIEW_IDENTITY_PROMPT,
@@ -225,7 +226,7 @@ async function runCodeReview(
       result = { text: "Review produced no output.", details: { status: "no_output" } };
     } else {
       result = {
-        text: capResult(rawText, join(options.room.roomDir, "scratch")),
+        text: capResult(rawText, scratchDir),
         details: { status: "success" },
       };
     }
@@ -243,9 +244,9 @@ async function runCodeReview(
     }
   } finally {
     signal.removeEventListener("abort", abortReview);
-    if (reviewLoop !== undefined && options.room.state === "open") {
+    if (reviewLoop !== undefined) {
       try {
-        await options.room.destroy(reviewLoop.id);
+        await reviewLoop.destroy();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         options.logger.warning("[code_review] Review cleanup failed", message);
@@ -266,14 +267,14 @@ function resolveInitiatingLoop(
   options: CreateCodeReviewToolOptions,
   sessionManager: unknown,
 ): AgentLoop {
-  const loop = options.room.get(options.initiatingAgentId);
-  if (loop === undefined || loop.session.sessionManager !== sessionManager) {
+  const loop = options.getInitiatingLoop();
+  if (loop.state === "destroyed" || loop.session.sessionManager !== sessionManager) {
     throw new Error("code_review initiating AgentLoop is no longer available.");
   }
   return loop;
 }
 
-/** Create the Room-primary tool that starts one detached review task. */
+/** Create the inactive-by-default tool that starts one AgentLoop-owned review task. */
 export function createCodeReviewTool(
   options: CreateCodeReviewToolOptions,
 ): ToolDefinition<typeof CodeReviewParams> {
@@ -289,8 +290,10 @@ export function createCodeReviewTool(
       "You are advised to use this tool to verify your work before you conclude you have finished a coding task.",
       "MUST Address issues found in the review findings based on guidelines before concluding the task",
       "After addressing review findings, report to the user what was fixed and what was not addressed (with reasons)",
+      "Use this tool to do code review instead of reviewing by yourself unless user explicitly asks you to do it",
     ],
     executionMode: "sequential",
+    defaultActive: false,
     execute: async (
       _toolCallId,
       params: { summary: string },
@@ -301,7 +304,7 @@ export function createCodeReviewTool(
       signal?.throwIfAborted();
       if (!context.model) throw new Error("code_review requires an active model.");
       const initiatingLoop = resolveInitiatingLoop(options, context.sessionManager);
-      const backgroundTasks = options.room.backgroundTasks;
+      const backgroundTasks = options.backgroundTasks;
       if (hasActiveCodeReviewTask(backgroundTasks)) {
         return {
           content: [{ type: "text" as const, text: CODE_REVIEW_ALREADY_RUNNING_MESSAGE }],
@@ -319,11 +322,10 @@ export function createCodeReviewTool(
         cwd: context.cwd,
       };
       const enqueueResult = (result: string): void => {
-        if (options.room.state !== "open"
-          || options.room.get(options.initiatingAgentId) !== initiatingLoop) {
+        if (initiatingLoop.state === "destroyed") {
           options.logger.warning(
             "[code_review] Completed report was not delivered",
-            "The initiating AgentLoop is no longer owned by its Room",
+            "The initiating AgentLoop was destroyed",
           );
           return;
         }
@@ -332,7 +334,13 @@ export function createCodeReviewTool(
       backgroundTasks.start({
         label: CODE_REVIEW_TASK_LABEL,
         run: async task => {
-          const result = await runCodeReview(options, params, snapshot, task.signal);
+          const result = await runCodeReview(
+            options,
+            initiatingLoop,
+            params,
+            snapshot,
+            task.signal,
+          );
           return task.signal.aborted
             ? undefined
             : formatBackgroundCodeReviewResult(result.text);
@@ -351,7 +359,7 @@ export function createCodeReviewTool(
   };
 }
 
-/** Create the primary-only tool that cancels active background code reviews. */
+/** Create the inactive-by-default tool that cancels this AgentLoop's active reviews. */
 export function createCancelCodeReviewTool(
   options: CreateCodeReviewToolOptions,
 ): ToolDefinition<typeof CancelCodeReviewParams> {
@@ -364,8 +372,9 @@ export function createCancelCodeReviewTool(
     promptGuidelines: [
       "Use cancel_code_review to stop an active background code_review before starting another review.",
     ],
+    defaultActive: false,
     execute: async () => {
-      const activeReviews = getActiveCodeReviewTasksFromManager(options.room.backgroundTasks);
+      const activeReviews = getActiveCodeReviewTasksFromManager(options.backgroundTasks);
       if (activeReviews.length === 0) {
         return {
           content: [{ type: "text" as const, text: "No running code review to cancel." }],
@@ -374,12 +383,13 @@ export function createCancelCodeReviewTool(
       }
 
       for (const task of activeReviews) task.abort("Cancelled by agent");
+      await Promise.allSettled(activeReviews.map(task => task.done));
       return {
         content: [{
           type: "text" as const,
           text: activeReviews.length === 1
-            ? "Cancelling running code review..."
-            : `Cancelling ${activeReviews.length} running code reviews...`,
+            ? "Cancelled running code review."
+            : `Cancelled ${activeReviews.length} running code reviews.`,
         }],
         details: {
           status: "success",

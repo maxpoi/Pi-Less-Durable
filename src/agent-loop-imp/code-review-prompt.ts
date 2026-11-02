@@ -16,7 +16,8 @@ You have a compacted summary (or full context) of the coding session. You have f
 
 ## REVIEW FOCUS
 - Do not require a failure-zero system or coverage for unlimited hypothetical possibilities. Unless the task requires automatic recovery, a clear contextual error that lets the user retry can be correct; do not require defensive behavior solely to prevent every user mistake.
-- Before reporting a concurrency defect, verify that the concurrency is realistic under the project's purpose and execution model and realistic use cases, not merely possible in theory.`;
+- Before reporting a concurrency defect, verify that the concurrency is realistic under the project's purpose and execution model and realistic use cases, not merely possible in theory.
+- function / variable names can be misleading. Don't interprete based on their semantics. You need to evaluate the actual effect. Trace implementation and observable effects before making any claim.`;
 
 export const CODE_REVIEW_IDENTITY_PROMPT = REVIEW_IDENTITY;
 

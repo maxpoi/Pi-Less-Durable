@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { AgentLoop } from "../agent/agent-loop.js";
-import type { Room } from "../room/room.js";
 import {
   CODE_REVIEW_AGENT_ID_PREFIX,
   CODE_REVIEW_AGENT_NAME,
@@ -14,20 +14,21 @@ import {
 } from "./code-review-prompt.js";
 
 export interface CreateCodeReviewAgentLoopOptions {
-  readonly room: Room;
+  readonly persistenceRoot: string;
   readonly cwd: string;
   readonly model: Model<Api>;
   readonly initialConversationHistory?: readonly SessionEntry[];
 }
 
-/** Create and register one restricted code-review AgentLoop. */
+/** Create one direct restricted code-review AgentLoop owned by its calling task. */
 export function createCodeReviewAgentLoop(
   options: CreateCodeReviewAgentLoopOptions,
 ): Promise<AgentLoop> {
+  const id = `${CODE_REVIEW_AGENT_ID_PREFIX}-${randomUUID()}`;
   return AgentLoop.create({
-    room: options.room,
+    dir: join(options.persistenceRoot, id),
     agent: {
-      id: `${CODE_REVIEW_AGENT_ID_PREFIX}-${randomUUID()}`,
+      id,
       name: CODE_REVIEW_AGENT_NAME,
       tag: CODE_REVIEW_AGENT_TAG,
     },
@@ -35,7 +36,9 @@ export function createCodeReviewAgentLoop(
       cwd: options.cwd,
       model: options.model,
       thinkingLevel: CODE_REVIEW_THINKING_LEVEL,
-      allowedToolNames: [...REVIEW_TOOL_ALLOWLIST],
+      toolConfig: {
+        allowedToolNames: [...REVIEW_TOOL_ALLOWLIST],
+      },
       ...(options.initialConversationHistory === undefined
         ? {}
         : { initialConversationHistory: options.initialConversationHistory }),

@@ -2,6 +2,7 @@ export {
   Agent,
   type AgentMessage,
   type AgentOptions,
+  type AgentTool,
 } from "@earendil-works/pi-agent-core";
 export {
   AgentSession,
@@ -11,6 +12,8 @@ export {
   type CreateAgentSessionResult,
   type SessionEntry,
   type SettingsManager,
+  type ToolDefinition,
+  type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 export type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -39,6 +42,7 @@ export {
 export type {
   AgentConfig,
   AgentLoopExtensionSources,
+  AgentToolConfig,
 } from "./agent/agent-session-factory.js";
 export {
   DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -96,6 +100,34 @@ export {
   PRIMARY_AGENT_TAG,
   type AgentIdentity,
 } from "./room/loop-manager.js";
+export {
+  createComputerActionTool,
+  executeComputerAction,
+  isComputerActionSupported,
+  validateComputerAction,
+  type ActionExecutionResult,
+  type ComputerActionDetails,
+  type ComputerActionParams,
+  type ComputerActionToolDependencies,
+  type InterestedAreaAfterAction,
+} from "./tools/computer-use.js";
+export {
+  SCREENSHOT_DIRECTORY,
+  buildScreenshotResult,
+  buildWindowsScreenshotProcess,
+  captureMainDisplay,
+  captureNativeDisplay,
+  createScreenshotTool,
+  cropScreenshot,
+  encodeNativeCapture,
+  isScreenshotSupported,
+  saveScreenshot,
+  type CroppedScreenshot,
+  type ScreenshotCapture,
+  type ScreenshotCropArea,
+  type ScreenshotDetails,
+  type ScreenshotToolDependencies,
+} from "./tools/screenshot.js";
 export {
   BACKGROUND_STARTED_MESSAGE,
   CODE_REVIEW_ALREADY_RUNNING_MESSAGE,
