@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import {
   createBackgroundTaskRunContext,
   type BackgroundTaskRunContext,
-  type RoomContext,
 } from "../multi-agent-pi/context.js";
 import type { AgentLogger } from "../logger/logger.js";
+import type { RoomId } from "./room-types.js";
 
 export type { BackgroundTaskRunContext } from "../multi-agent-pi/context.js";
 
@@ -20,9 +20,9 @@ export interface BackgroundTaskOptions<TResult = unknown> {
     event: BackgroundTaskAbortEvent,
     ctx: BackgroundTaskRunContext,
   ) => Promise<void> | void;
-  /** Execute one Room-owned unit of detached work. Undefined suppresses delivery. */
+  /** Execute one owner-scoped unit of detached work. Undefined suppresses delivery. */
   readonly run: (ctx: BackgroundTaskRunContext) => Promise<TResult | undefined>;
-  /** Process one completed result while the task remains owned by its Room. */
+  /** Process one completed result while the task remains owned by its manager. */
   readonly onResult?: (
     result: TResult,
     ctx: BackgroundTaskRunContext,
@@ -42,18 +42,31 @@ export interface BackgroundTaskHandle<TResult = unknown> {
   readonly done: Promise<TResult | undefined>;
 }
 
-export interface BackgroundTaskManagerOptions extends RoomContext {
+export type BackgroundTaskManagerOptions = {
   readonly logger: AgentLogger;
-}
+} & (
+  | { readonly roomId: RoomId; readonly agentId?: string }
+  | { readonly roomId?: RoomId; readonly agentId: string }
+);
 
-/** Room-level owner for detached operation admission, cancellation, and settlement. */
+/** Owner-scoped manager for detached operation admission, cancellation, and settlement. */
 export class BackgroundTaskManager {
   readonly #tasks = new Map<string, BackgroundTaskHandle<unknown>>();
   readonly #options: BackgroundTaskManagerOptions;
+  #roomId: RoomId | undefined;
   #acceptingTasks = true;
 
   constructor(options: BackgroundTaskManagerOptions) {
+    if (options.roomId === undefined && options.agentId === undefined) {
+      throw new Error("BackgroundTaskManager requires a Room or AgentLoop identity");
+    }
     this.#options = options;
+    this.#roomId = options.roomId;
+  }
+
+  /** @internal Update Room identity when an idle standalone AgentLoop transfers ownership. */
+  setRoomId(roomId: RoomId): void {
+    this.#roomId = roomId;
   }
 
   get activeCount(): number {
@@ -67,19 +80,20 @@ export class BackgroundTaskManager {
   start<TResult>(options: BackgroundTaskOptions<TResult>): BackgroundTaskHandle<TResult> {
     if (!this.#acceptingTasks) {
       throw new Error(
-        `Cannot start background task "${options.label}" for Room "${this.#options.roomId}": background task shutdown has begun`,
+        `Cannot start background task "${options.label}" for ${this.#ownerLabel}: background task shutdown has begun`,
       );
     }
 
     const id = options.id ?? `${options.label}-${randomUUID()}`;
     if (this.#tasks.has(id)) {
-      throw new Error(`Background task "${id}" already exists in Room "${this.#options.roomId}"`);
+      throw new Error(`Background task "${id}" already exists for ${this.#ownerLabel}`);
     }
     const label = options.label;
     const startedAt = Date.now();
     const controller = new AbortController();
     const context = createBackgroundTaskRunContext({
-      roomId: this.#options.roomId,
+      roomId: this.#roomId,
+      agentId: this.#options.agentId,
       id,
       label,
       signal: controller.signal,
@@ -157,7 +171,7 @@ export class BackgroundTaskManager {
     for (const task of this.#tasks.values()) task.abort(reason);
   }
 
-  /** @internal Close task admission synchronously before Room teardown begins. */
+  /** @internal Close task admission synchronously before owner teardown begins. */
   closeAdmission(): void {
     this.#acceptingTasks = false;
   }
@@ -174,9 +188,15 @@ export class BackgroundTaskManager {
   reopen(): void {
     if (this.#tasks.size > 0) {
       throw new Error(
-        `Cannot reopen background tasks for Room "${this.#options.roomId}" while tasks remain active`,
+        `Cannot reopen background tasks for ${this.#ownerLabel} while tasks remain active`,
       );
     }
     this.#acceptingTasks = true;
+  }
+
+  get #ownerLabel(): string {
+    return this.#options.agentId === undefined
+      ? `Room "${this.#roomId}"`
+      : `AgentLoop "${this.#options.agentId}"`;
   }
 }

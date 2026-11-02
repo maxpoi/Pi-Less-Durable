@@ -72,8 +72,10 @@ export class LoopManager {
 
   register(loop: AgentLoop): AgentRegistration {
     assertAgentIdentity(loop);
-    if (loop.state !== "idle") {
-      throw new Error(`Cannot register agent loop "${loop.id}" while it is ${loop.state}`);
+    if (loop.state !== "idle" || loop.isBusy) {
+      throw new Error(
+        `Cannot register agent loop "${loop.id}" while it is ${loop.state === "idle" ? "busy" : loop.state}`,
+      );
     }
     if (this.#records.has(loop.id) || this.#destructions.has(loop.id)) {
       throw new Error(`Agent "${loop.id}" already exists`);
