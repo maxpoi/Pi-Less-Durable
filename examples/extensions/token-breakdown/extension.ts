@@ -18,11 +18,11 @@
  *   Enabled by default.
  *   Set TOKEN_BREAKDOWN_DEBUG=0 in the host environment to disable.
  *   Requires a process restart after changing the environment.
- *   Log location: {roomDir}/token-breakdown-debug.log
+ *   Log location: {currentDir}/token-breakdown-debug.log
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Room } from "../../../src/room/room.js";
 import { extractProviderSystemText } from "./provider-prompt.js";
@@ -539,9 +539,9 @@ interface OwningLoop {
 function getOwningLoop(room: Room, loopId: string): OwningLoop {
 	return {
 		roomId: room.id,
-		roomDir: room.roomDir,
+		roomDir: room.currentDir,
 		loopId,
-		key: `${room.roomDir}\0${loopId}`,
+		key: `${room.currentDir}\0${loopId}`,
 	};
 }
 
@@ -733,29 +733,20 @@ function ensureRoomLifecycleRegistration(
 ): void {
 	if (roomsWithLifecycleRegistration.has(room)) return;
 
-	const unsubscribeBeforeReset = room.on("before_room_reset", ({ roomId }) => {
+	const unsubscribeBeforeReset = room.on("before_room_reset", ({ roomId, currentDir }) => {
 		if (!isEnabled()) return;
-		const stats = sessionStats.get(room.roomDir);
+		const stats = sessionStats.get(currentDir);
 		if (stats && stats.apiCalls > 0) {
 			console.log(`[token-breakdown] ${roomId.slice(-8)} SESSION END\n${formatSessionSummary(stats)}`);
 		}
 	});
 	let unsubscribeResetEnd = (): void => {};
 	try {
-		unsubscribeResetEnd = room.on("room_reset_end", ({ roomDir, archiveName }) => {
+		unsubscribeResetEnd = room.on("room_reset_end", ({ currentDir }) => {
 			try {
 				if (!isEnabled()) return;
-				clearLoopStateForRoom(roomDir);
-				sessionStats.delete(roomDir);
-				const logFile = join(roomDir, "token-breakdown-debug.log");
-				if (archiveName && existsSync(logFile)) {
-					try {
-						renameSync(
-							logFile,
-							join(roomDir, "sessions", archiveName, "token-breakdown-debug.log"),
-						);
-					} catch { /* best-effort */ }
-				}
+				clearLoopStateForRoom(currentDir);
+				sessionStats.delete(currentDir);
 			} finally {
 				roomsWithLifecycleRegistration.delete(room);
 				unsubscribeBeforeReset();
