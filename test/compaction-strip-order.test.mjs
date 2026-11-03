@@ -143,7 +143,7 @@ test("compaction strip runs first in every factory-created loop on initializatio
     extensionSources,
   });
   const child = await AgentLoop.create({
-    dir: join(room.roomDir, "loops", "child"),
+    dir: join(room.currentDir, "loops", "child"),
     agent: { id: "child", name: "Child", tag: "worker" },
     config: { cwd: process.cwd() },
     extensionSources,

@@ -36,7 +36,7 @@ export interface PrimaryAgentLoopOptions {
 
 /** Consumer-owned identity, persistence, and optional primary inputs. */
 export interface CreateRoomOptions {
-  /** UX-facing Room name and Harness identity; also used as the session-archive prefix. Maximum 200 ASCII characters from `a-zA-Z0-9_-+=.()[]{}!@#$%^&`. */
+  /** UX-facing Room name and Harness identity; also used as the archive-directory prefix. Maximum 200 ASCII characters from `a-zA-Z0-9_-+=.()[]{}!@#$%^&`. */
   readonly id?: string;
   /**
    * Room data directory, exposed through roomDir as its filesystem-canonical identity.
@@ -58,22 +58,51 @@ export interface ResetRoomOptions {
 
 export interface ResetRoomResult {
   readonly room: Room;
-  /** Created directory name under `<roomDir>/sessions`, when prior-session artifacts existed. */
-  readonly archiveName?: string;
+  /** Sibling directory created by renaming `<roomDir>/sessions/current`. */
+  readonly archiveName: string;
+  readonly primaryLoop?: AgentLoop;
+}
+
+export interface RestoreRoomSessionOptions {
+  /** Optional primary created only after the restored files are active and the Room has reopened. */
+  readonly primaryLoop?: PrimaryAgentLoopOptions;
+}
+
+export interface RestoreRoomSessionResult {
+  readonly room: Room;
+  /** Exact sibling archive directory renamed to `<roomDir>/sessions/current`. */
+  readonly restoredArchiveName: string;
+  /** Archive created by renaming the previously active `<roomDir>/sessions/current`. */
+  readonly previousArchiveName: string;
   readonly primaryLoop?: AgentLoop;
 }
 
 export interface BeforeRoomResetEvent {
   readonly type: "before_room_reset";
   readonly roomId: RoomId;
+  /** Stable Room container holding arbitrary Room data and the `sessions` namespace. */
   readonly roomDir: string;
+  /** Active conversation directory at the time the event is issued. */
+  readonly currentDir: string;
 }
 
 export interface RoomResetEndEvent {
   readonly type: "room_reset_end";
   readonly roomId: RoomId;
   readonly roomDir: string;
-  readonly archiveName?: string;
+  /** Fresh or restored active conversation directory. */
+  readonly currentDir: string;
+  readonly archiveName: string;
+}
+
+export interface SessionRestoreEndEvent {
+  readonly type: "session_restore_end";
+  readonly roomId: RoomId;
+  readonly roomDir: string;
+  /** Restored active conversation directory. */
+  readonly currentDir: string;
+  /** Consumed sibling archive directory name. */
+  readonly archiveName: string;
 }
 
 export type BeforeRoomResetHandler = MultiAgentPiHandler<
@@ -83,5 +112,10 @@ export type BeforeRoomResetHandler = MultiAgentPiHandler<
 
 export type RoomResetEndHandler = MultiAgentPiHandler<
   RoomResetEndEvent,
+  RoomContext
+>;
+
+export type SessionRestoreEndHandler = MultiAgentPiHandler<
+  SessionRestoreEndEvent,
   RoomContext
 >;

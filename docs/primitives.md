@@ -19,7 +19,7 @@ MultiAgentPiHarness
 
 ## Room
 
-A `Room` is a virtual concept of a manager, which manage and act as a boundary of a bunch of `Agent Loop` via `BackgroundTaskManager` and `LoopManager`. It is represented physically on device by having a `dir`, which turns it to an actual folder on device. Artifacts like `context.jsonl`, `loops` dir goes under the `Room`'s `dir`
+A `Room` is a virtual concept of a manager, which manage and act as a boundary of a bunch of `Agent Loop` via `BackgroundTaskManager` and `LoopManager`. It is represented physically on device by having a `dir`, which turns it to an actual folder on device. The active conversation and all its artifacts go under the Room's `sessions/current` dir, while every sibling folder under `sessions` appears in the session archive listing.
 
 It is not mandatory to have a `Room` in order to have an `Agent Loop`. But register a loop to a `Room` means its lifecycle is bounded by the `Room` internally so `Room` may call destroy / reload when needed.
 
@@ -29,8 +29,8 @@ Roughly:
 → before_room_reset
 → abort and settle every background task
 → destroy every registered AgentLoop
-→ archive context, prompt-queue journal, memory, metadata, usage, and child-loop artifacts
-→ remove prior-session attachments, leftover loop data, and review scratch output
+→ rename the complete `sessions/current` conversation directory to a sibling archive
+→ create an empty `sessions/current` conversation directory
 → room_reset_end
 → reopen the empty Room
 ```
@@ -49,9 +49,9 @@ A manager for owner-scoped detached work. A Room manager owns Room-wide operatio
 
 It has an id, name (for display purpose) and a tag (for grouping purpose). For example, you can register an extension target specific id or specific tag so all loops belong to the same tag will be registered.
 
-Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical persistence `dir` containing `context.jsonl`. The persistence directory does not define tool execution cwd. Active loop-owned background tasks make the AgentLoop busy, block reload, and are aborted and awaited by `destroy()`.
+Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical persistence `dir` where `context.jsonl` is created after conversation begins. Active loop-owned background tasks make the AgentLoop busy, block reload, and are aborted and awaited by `destroy()`.
 
-If you want to register a loop as primary loop into a room, it needs to have a PRIMARY_AGENT_TAG and same `dir` as the `Room` dir.
+If you want to register a loop as primary loop into a room, it needs to have a PRIMARY_AGENT_TAG and same `dir` as the Room's `sessions/current` dir.
 
 ### Round
 A `Round` is a complete lifecycle from begin to end started by a prompt (direct prompt, resume prompt or enqueued prompt).

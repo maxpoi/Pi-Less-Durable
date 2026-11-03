@@ -269,8 +269,8 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     dir = explicitDir;
   } else if (room !== undefined) {
     dir = agent.tag === PRIMARY_AGENT_TAG
-      ? room.roomDir
-      : resolve(room.roomDir, "loops", agent.id);
+      ? room.currentDir
+      : resolve(room.currentDir, "loops", agent.id);
   } else {
     throw new Error("AgentLoop.create() requires exactly one of dir or room");
   }

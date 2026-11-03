@@ -153,8 +153,11 @@ export {
   type PrimaryAgentLoopOptions,
   type ResetRoomOptions,
   type ResetRoomResult,
+  type RestoreRoomSessionOptions,
+  type RestoreRoomSessionResult,
   type RoomEnqueuePromptOptions,
   type RoomId,
   type RoomPromptOptions,
+  type RoomSessionArchive,
   type RoomState,
 } from "./room/room.js";

@@ -21,6 +21,8 @@ import type {
   BeforeRoomResetHandler,
   RoomResetEndEvent,
   RoomResetEndHandler,
+  SessionRestoreEndEvent,
+  SessionRestoreEndHandler,
 } from "../room/room-types.js";
 import type { Room } from "../room/room.js";
 
@@ -120,6 +122,8 @@ export type {
   BeforeRoomResetHandler,
   RoomResetEndEvent,
   RoomResetEndHandler,
+  SessionRestoreEndEvent,
+  SessionRestoreEndHandler,
 } from "../room/room-types.js";
 
 export interface MultiAgentPiEventMap {
@@ -133,6 +137,10 @@ export interface MultiAgentPiEventMap {
   };
   readonly room_reset_end: {
     readonly event: RoomResetEndEvent;
+    readonly context: RoomContext;
+  };
+  readonly session_restore_end: {
+    readonly event: SessionRestoreEndEvent;
     readonly context: RoomContext;
   };
 }
@@ -161,6 +169,8 @@ export interface MultiAgentPiAPI {
   on(event: "before_room_reset", handler: BeforeRoomResetHandler): () => void;
   /** Observe completed resets. Duplicate handler registration throws. */
   on(event: "room_reset_end", handler: RoomResetEndHandler): () => void;
+  /** Observe an archive becoming the active Room session. Duplicate handler registration throws. */
+  on(event: "session_restore_end", handler: SessionRestoreEndHandler): () => void;
 }
 
 /** Existing extension-facing name for the unified MultiAgentPi API. */
@@ -189,11 +199,16 @@ function on(
   handler: RoomResetEndHandler,
 ): () => void;
 function on(
+  event: "session_restore_end",
+  handler: SessionRestoreEndHandler,
+): () => void;
+function on(
   event: MultiAgentPiEventType,
   handler:
     | AgentLoopRoundEndHandler
     | BeforeRoomResetHandler
-    | RoomResetEndHandler,
+    | RoomResetEndHandler
+    | SessionRestoreEndHandler,
 ): () => void {
   let handlers = eventHandlers.get(event);
   if (handlers === undefined) {
@@ -235,6 +250,13 @@ export function issueMultiAgentPiEvent(
 /** @internal Issue one Room event through local and process-wide scopes. */
 export function issueMultiAgentPiEvent(
   event: RoomResetEndEvent,
+  issuer: Room,
+  issueLocally: (context: RoomContext) => void | Promise<void>,
+  onPublicError: (error: unknown) => void,
+): Promise<void>;
+/** @internal Issue one Room event through local and process-wide scopes. */
+export function issueMultiAgentPiEvent(
+  event: SessionRestoreEndEvent,
   issuer: Room,
   issueLocally: (context: RoomContext) => void | Promise<void>,
   onPublicError: (error: unknown) => void,
