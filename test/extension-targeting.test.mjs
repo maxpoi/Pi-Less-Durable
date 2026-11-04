@@ -57,26 +57,31 @@ after(async () => {
   }
 });
 
-test("consumer inline extensions cannot use framework-reserved names", async () => {
+test("framework extensions win consumer native-path collisions", async () => {
+  warnings.length = 0;
+  let consumerFactoryCalls = 0;
   const { room } = await Room.create({
-    id: "reserved-extension-name",
-    roomDir: join(workingDir, "rooms", "reserved-extension-name"),
+    id: "framework-extension-wins",
+    roomDir: join(workingDir, "rooms", "framework-extension-wins"),
   });
   harness.register(room);
-  await assert.rejects(
-    AgentLoop.create({
-      room,
-      agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
-      config: { cwd: process.cwd() },
-      extensionSources: {
-        inlineExtensions: [{
-          name: "multi-agent-pi-compaction-strip",
-          factory() {},
-        }],
-      },
-    }),
-    /Consumer inline extension name "multi-agent-pi-compaction-strip" is reserved/,
-  );
+  await AgentLoop.create({
+    room,
+    agent: { id: "main", name: "Main", tag: PRIMARY_AGENT_TAG },
+    config: { cwd: process.cwd() },
+    extensionSources: {
+      additionalInlineExtensions: [{
+        name: "multi-agent-pi-compaction-strip",
+        factory() {
+          consumerFactoryCalls += 1;
+        },
+      }],
+    },
+  });
+  assert.equal(consumerFactoryCalls, 0);
+  assert.ok(warnings.some(warning =>
+    warning.includes('"<inline:multi-agent-pi-compaction-strip>"')
+  ));
 });
 
 test("failed extension sources discard their local targeted registrations", async () => {
@@ -93,8 +98,11 @@ test("failed extension sources discard their local targeted registrations", asyn
       + "}\n",
   );
   const extensionSources = {
-    extensionFiles: [failedFileExtension],
-    inlineExtensions: [
+    additionalExtensionFiles: [{
+      name: "failed-file-targeted-source",
+      path: failedFileExtension,
+    }],
+    additionalInlineExtensions: [
       {
         name: "failed-targeted-source",
         async factory(pi) {
@@ -161,7 +169,7 @@ test("failed extension sources discard their local targeted registrations", asyn
 test("targeted setup failure discards its native source with an exact diagnostic", async () => {
   warnings.length = 0;
   const extensionSources = {
-    inlineExtensions: [{
+    additionalInlineExtensions: [{
       name: "targeted-setup-failure",
       async factory(pi) {
         await multiAgentPi.register(pi, {

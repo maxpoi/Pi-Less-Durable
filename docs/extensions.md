@@ -2,8 +2,6 @@
 
 ## Native Pi extensions
 
-Harness owns one source catalog discovered from direct `<extensionsDir>/<name>/index.ts` children. The host must provide `workingDir`; `extensionsDir` defaults to `<workingDir>/extensions`.
-
 Use direct native Pi registration for behavior shared by every loop receiving the source:
 
 ```ts
@@ -15,11 +13,48 @@ export default function extension(pi: ExtensionAPI) {
 
 Pi-Less-Durable deliberately uses only these native Pi extension mechanisms:
 
-- `additionalExtensionPaths` carries the current Harness catalog followed by loop-specific file sources. Each AgentLoop loader keeps one stable path array and refreshes its contents before native reload.
-- `extensionFactories` carries framework and consumer inline extensions. Their membership is fixed for the loader lifetime, while Pi executes the factories again on reload.
+- `additionalExtensionPaths` carries selected Harness file entries, loop-specific file sources, and the explicit `builtin:<name>` paths for selected inline factories marked `builtin: true`. Each AgentLoop loader keeps one stable path array and refreshes its filesystem catalog entries before native reload.
+- `extensionFactories` carries framework and consumer inline extensions. Their membership is fixed for the loader lifetime, while Pi executes the factories again on reload. A selected `builtin: true` factory is paired with its explicit Pi resource path so it materializes even though automatic discovery is disabled.
 - `extensionsOverride` establishes final runtime order and omits temporarily disabled extensions. Consumer source and inline setup may already have run; framework default wrappers stop before invoking their underlying setup when disabled.
 
 The framework keeps `noExtensions: true`; Pi settings, packages, automatic user/project extension directories, and automatically enabled built-ins are not discovered. `src/multi-agent-pi/api.ts` is the central public export surface for Pi's complete extension event API, framework contexts, and MultiAgentPi callback contracts.
+
+## Harness catalog and discovery
+
+Harness owns one extension catalog shared by its AgentLoops. `extensionDirs` controls filesystem discovery:
+
+- `undefined` scans `<workingDir>/extensions`.
+- An empty array disables filesystem discovery.
+- Otherwise, every configured root is scanned for direct `<root>/<name>/index.ts` children.
+
+Harness construction may also provide named `additionalExtensionFiles` and named `additionalInlineExtensions`. The declared catalog name remains the file entry's public identity even when it differs from the filename, including for temporary disablement. Catalog collisions remain ordered inputs for native Pi-compatible resolution. `harness.listExtensions()` returns an immutable metadata snapshot without exposing inline factories.
+
+Exact Harness files can be changed after construction with `addExtensionFile()` and `removeExtensionFile()`. Catalog listing changes immediately; existing AgentLoops materialize the new catalog on reload. Discovered files remain owned by their discovery roots and cannot be removed through `removeExtensionFile()`.
+
+Each AgentLoop selects catalog entries before Pi imports files or executes factories:
+
+- An undefined `allowedExtensions` selects the complete Harness catalog.
+- An empty `allowedExtensions` selects none.
+- `excludedExtensions` applies after the allowlist.
+
+Loop-specific `additionalExtensionFiles` and `additionalInlineExtensions` are named, additive sources that are not listed in the Harness catalog and bypass catalog filtering:
+
+```ts
+extensionSources: {
+  additionalExtensionFiles: [
+    { name: "audit", path: "/plugins/security.ts" },
+  ],
+  additionalInlineExtensions: [
+    { name: "metrics", factory(pi) { /* ... */ } },
+  ],
+}
+```
+
+Extensions resolve in this order: selected Harness catalog entries, loop-specific files, loop-specific inline entries, then framework extensions. Name collisions mirror Pi's built-in factory map: normal `Map.set()` makes the latter definition win without moving the key's original order. Inline native-path collisions also use latter-wins resolution, ensuring a framework factory cannot be displaced through its private Pi name. File-path collisions mirror Pi's resource deduplication: regular file targets use `realpathSync()` identity and the first canonical path wins. All collisions are logged without rejecting AgentLoop construction or reload; losing files are not imported and losing inline factories are not executed. File sources that are missing, inaccessible, directories, or otherwise not regular files are logged and skipped, as are malformed consumer entries without a usable name, path, or inline factory.
+
+Pi treats an inline object with `builtin: true` as the implementation of the synthetic `builtin:<name>` resource rather than as an ordinary inline factory. Pi-Less-Durable explicitly activates that resource whenever the corresponding winning entry is selected or supplied as a loop-specific inline addition.
+
+Each AgentLoop's ResourceLoader owns the applied native-path-to-public-name snapshot from its latest reload. Catalog mutation does not change the identity of a still-loaded source; the next reload replaces the paths and identities together. Temporary disablement resolves only through this applied snapshot, so `{ name: "audit", path: "/plugins/security.ts" }` is addressed as `audit`, never as `security`.
 
 ## Targeted behavior
 
@@ -70,8 +105,7 @@ system prompt composer
 → system prompt finalizer
 ```
 
-Inline extension names beginning with `multi-agent-pi-` are reserved for framework-owned
-extensions.
+Framework sources are resolved after consumer sources, so a framework extension wins when a consumer uses the same name.
 
 ## Temporary disable
 

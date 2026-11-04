@@ -115,8 +115,11 @@ test("compaction strip runs first in every factory-created loop on initializatio
     factory: registerCompactionObserver,
   };
   const extensionSources = {
-    extensionFiles: [fileURLToPath(extensionFile)],
-    inlineExtensions: [inlineExtension, customExtension],
+    additionalExtensionFiles: [{
+      name: "test-file-compaction-observer",
+      path: fileURLToPath(extensionFile),
+    }],
+    additionalInlineExtensions: [inlineExtension, customExtension],
   };
   const harness = new MultiAgentPiHarness({
     config: CONFIG,

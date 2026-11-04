@@ -49,7 +49,7 @@ A manager for owner-scoped detached work. A Room manager owns Room-wide operatio
 
 It has an id, name (for display purpose) and a tag (for grouping purpose). For example, you can register an extension target specific id or specific tag so all loops belong to the same tag will be registered.
 
-Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical persistence `dir` where `context.jsonl` is created after conversation begins. Active loop-owned background tasks make the AgentLoop busy, block reload, and are aborted and awaited by `destroy()`.
+Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical data `dir`. Durable persistence stores the native transcript in `<dir>/context.jsonl` after conversation begins. Memory persistence keeps the transcript entirely in Pi's in-memory SessionManager; its data directory remains available for non-transcript artifacts and does not contain a framework-created `context.jsonl`. Active loop-owned background tasks make the AgentLoop busy, block reload, and are aborted and awaited by `destroy()`.
 
 If you want to register a loop as primary loop into a room, it needs to have a PRIMARY_AGENT_TAG and same `dir` as the Room's `sessions/current` dir.
 

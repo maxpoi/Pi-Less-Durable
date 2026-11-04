@@ -1,6 +1,7 @@
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
-import { generateSummary as generatePiSummary } from "@earendil-works/pi-coding-agent";
+import {
+	generateSummary as generateLocalSummary,
+	type GenerateSummaryOptions,
+} from "../model-operations.js";
 
 export interface CodexCompactionLogger {
 	raw(message: string, details: string): void;
@@ -21,17 +22,8 @@ export interface CodexCompactionItem extends Record<string, unknown> {
 	encrypted_content: string;
 }
 
-export interface LocalSummaryGenerationOptions {
+export interface LocalSummaryGenerationOptions extends GenerateSummaryOptions {
 	mode?: "local";
-	messages: AgentMessage[];
-	model: Model<any>;
-	reserveTokens: number;
-	signal?: AbortSignal;
-	customInstructions?: string;
-	previousSummary?: string;
-	thinkingLevel?: ThinkingLevel;
-	streamFn?: StreamFn;
-	sessionId?: string;
 }
 
 export interface ServerSummaryGenerationOptions {
@@ -177,25 +169,6 @@ async function logRawResponseBody(response: Response, logger: CodexCompactionLog
 		logger.raw("[codex-compaction] Raw response", rawResponse);
 	}
 	if (readError) logger.warning("[codex-compaction] Raw response stream failed", readError);
-}
-
-function generateLocalSummary(options: LocalSummaryGenerationOptions): Promise<string> {
-	return generatePiSummary(
-		options.messages,
-		options.model,
-		options.reserveTokens,
-		undefined,
-		undefined,
-		options.signal,
-		options.customInstructions,
-		options.previousSummary,
-		options.thinkingLevel,
-		options.streamFn,
-		undefined,
-		undefined,
-		undefined,
-		options.sessionId,
-	);
 }
 
 async function generateServerSummary(options: ServerSummaryGenerationOptions): Promise<CodexCompactionItem> {
