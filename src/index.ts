@@ -33,6 +33,7 @@ export {
 export {
   AgentLoop,
   type AgentLoopLifecycleKind,
+  type AgentLoopPersistence,
   type AgentLoopQueuedPromptType,
   type AgentLoopResult,
   type AgentLoopRoundOutcome,
@@ -60,6 +61,13 @@ export {
   type AgentLogger,
 } from "./logger/logger.js";
 export {
+  generateSummary,
+  probeModel,
+  type GenerateSummaryOptions,
+  type ProbeModelOptions,
+  type ProbeModelResult,
+} from "./model-operations.js";
+export {
   CODE_REVIEW_IDENTITY_PROMPT,
   CODE_REVIEW_METHODOLOGY_PROMPT,
   CODE_REVIEW_STANDARDS_PROMPT,
@@ -84,6 +92,11 @@ export {
   type MultiAgentPiHarnessOptions,
   type ReloadMultiAgentPiHarnessOptions,
 } from "./multi-agent-pi-harness.js";
+export type {
+  HarnessExtensionCatalogEntry,
+  HarnessExtensionFile,
+  HarnessInlineExtension,
+} from "./extensions/extension-catalog.js";
 export {
   MESSAGE_BATCH_WINDOW_MS,
   MessagePostQueue,

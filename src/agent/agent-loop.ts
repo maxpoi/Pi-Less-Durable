@@ -22,7 +22,6 @@ import type { RoomId } from "../room/room-types.js";
 import {
   CODEMODE_EXTENSION_NAME,
   CODEX_SERVER_COMPACTION_EXTENSION_NAME,
-  isExtensionDisabled,
 } from "../extensions/built-in-extensions.js";
 import {
   clearAgentWaitingHeartbeat,
@@ -46,6 +45,7 @@ export type AgentLoopQueuedPromptType =
   | "group-before-idle-then-prompt"
   | "wait-idle-then-prompt";
 export type AgentLoopRoundOutcome = "completed" | "failed" | "aborted" | "paused";
+export type AgentLoopPersistence = "durable" | "memory";
 
 export interface AgentLoopResult {
   readonly round: number;
@@ -86,10 +86,12 @@ export interface AgentIdentity {
 export type CreateAgentLoopOptions = {
   readonly agent: AgentIdentity;
   readonly config: AgentConfig;
+  /** Native Pi transcript persistence. Defaults to durable. */
+  readonly persistence?: AgentLoopPersistence;
   readonly extensionSources?: AgentLoopExtensionSources;
 } & (
   | {
-      /** Persistence directory; AgentLoop.dir exposes its filesystem-canonical identity. */
+      /** AgentLoop data directory; AgentLoop.dir exposes its filesystem-canonical identity. */
       readonly dir: string;
       readonly room?: never;
     }
@@ -97,6 +99,12 @@ export type CreateAgentLoopOptions = {
       /** Room whose canonical root/child directory should contain this AgentLoop. */
       readonly room: Room;
       readonly dir?: never;
+    }
+  | {
+      /** In-memory standalone loops receive a unique OS temporary data directory. */
+      readonly persistence: "memory";
+      readonly dir?: never;
+      readonly room?: never;
     }
 );
 
@@ -285,9 +293,9 @@ export class AgentLoop {
     }
     if (this.#disabledExtensions.has(extension)) return Promise.resolve();
 
-    const requestedNames = new Set([extension]);
-    const matches = this.session.resourceLoader.getExtensions().extensions.filter(
-      loadedExtension => isExtensionDisabled(loadedExtension.path, requestedNames),
+    const resourceLoader = this.#resourceLoader();
+    const matches = resourceLoader.getExtensions().extensions.filter(loadedExtension =>
+      resourceLoader.getAppliedExtensionName(loadedExtension.path) === extension
     );
     if (matches.length === 0) {
       throw new Error(

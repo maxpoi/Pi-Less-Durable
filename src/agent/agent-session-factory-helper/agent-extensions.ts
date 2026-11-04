@@ -1,19 +1,26 @@
 import { resolve } from "node:path";
 import type {
   ExtensionRunner,
-  InlineExtension,
   SessionManager,
   SettingsManager,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { CodexServerCompactionController } from "../../compaction/codex-server-compaction.js";
+import type { AgentLogger } from "../../logger/logger.js";
 import {
-  assertConsumerInlineExtensionNames,
+  CODEMODE_EXTENSION_NAME,
+  CODEX_SERVER_COMPACTION_EXTENSION_NAME,
+  COMPACTION_STRIP_EXTENSION_NAME,
   createBuiltInExtensions,
-  isExtensionDisabled,
 } from "../../extensions/built-in-extensions.js";
 import { MultiAgentPiHarness } from "../../multi-agent-pi-harness.js";
 import { MultiAgentPiResourceLoader } from "../../multi-agent-pi/extension-registry.js";
+import {
+  createHarnessExtensionMatcher,
+  getValidExtensionName,
+  type HarnessExtensionFile,
+  type HarnessInlineExtension,
+} from "../../extensions/extension-catalog.js";
 import type { RoomId } from "../../room/room-types.js";
 import type { AgentIdentity } from "../../room/loop-manager.js";
 import {
@@ -29,8 +36,14 @@ import {
 
 /** Native Pi extension sources selected for one AgentLoop. */
 export interface AgentLoopExtensionSources {
-  readonly extensionFiles?: readonly string[];
-  readonly inlineExtensions?: readonly InlineExtension[];
+  /** Harness catalog allowlist by catalog name. Undefined allows all; an empty list allows none. */
+  readonly allowedExtensions?: readonly string[];
+  /** Harness catalog denylist applied after the allowlist. */
+  readonly excludedExtensions?: readonly string[];
+  /** Named exact file sources added only to this AgentLoop and unaffected by catalog filtering. */
+  readonly additionalExtensionFiles?: readonly HarnessExtensionFile[];
+  /** Named inline sources added only to this AgentLoop and unaffected by catalog filtering. */
+  readonly additionalInlineExtensions?: readonly HarnessInlineExtension[];
 }
 
 interface CreateAgentExtensionsOptions {
@@ -53,6 +66,76 @@ interface AgentExtensionsAssembly {
   readonly resourceLoader: MultiAgentPiResourceLoader;
   readonly codexServerCompaction: CodexServerCompactionController;
   readonly disabledExtensions: Set<string>;
+}
+
+function createFrameworkExtensionSources(
+  promptExtensions: ReturnType<typeof createAgentSystemPromptExtensions>,
+  codemodeExtension: HarnessInlineExtension,
+  compactionStripExtension: HarnessInlineExtension,
+  codexServerCompactionExtension: HarnessInlineExtension,
+): Array<{
+  readonly name: string;
+  readonly kind: "inline";
+  readonly extension: HarnessInlineExtension;
+}> {
+  const extensions: Array<readonly [string, HarnessInlineExtension]> = [
+    [promptExtensions.composer.name, promptExtensions.composer],
+    [CODEMODE_EXTENSION_NAME, codemodeExtension],
+    [COMPACTION_STRIP_EXTENSION_NAME, compactionStripExtension],
+    [CODEX_SERVER_COMPACTION_EXTENSION_NAME, codexServerCompactionExtension],
+    [promptExtensions.finalizer.name, promptExtensions.finalizer],
+  ];
+  return extensions.map(([name, extension]) => ({
+    name,
+    kind: "inline",
+    extension,
+  }));
+}
+
+function resolveAdditionalExtensions(
+  sources: AgentLoopExtensionSources | undefined,
+  logger: AgentLogger,
+): {
+  readonly files: readonly HarnessExtensionFile[];
+  readonly inline: readonly HarnessInlineExtension[];
+} {
+  const files = (sources?.additionalExtensionFiles ?? []).flatMap(extension => {
+    const name = getValidExtensionName(extension);
+    if (name === undefined) {
+      logger.warning(
+        "Skipping invalid AgentLoop extension",
+        "Additional extension files require a non-empty name",
+      );
+      return [];
+    }
+    if (typeof extension.path !== "string" || !extension.path.trim()) {
+      logger.warning(
+        "Skipping invalid AgentLoop extension",
+        `Additional extension file "${name}" requires a non-empty path`,
+      );
+      return [];
+    }
+    return [{ name, path: resolve(extension.path) }];
+  });
+  const inline = (sources?.additionalInlineExtensions ?? []).flatMap(extension => {
+    const name = getValidExtensionName(extension);
+    if (name === undefined) {
+      logger.warning(
+        "Skipping invalid AgentLoop extension",
+        "Inline extensions require a non-empty name",
+      );
+      return [];
+    }
+    if (typeof extension.factory !== "function") {
+      logger.warning(
+        "Skipping invalid AgentLoop extension",
+        `Inline extension "${name}" requires a factory`,
+      );
+      return [];
+    }
+    return [extension];
+  });
+  return { files, inline };
 }
 
 /** Bind provider execution through the native Pi extension runner. */
@@ -80,13 +163,13 @@ export async function createAgentExtensions(
   options: CreateAgentExtensionsOptions,
 ): Promise<AgentExtensionsAssembly> {
   const harness = MultiAgentPiHarness.instance;
-  const extensionFiles = [...new Set(
-    (options.extensionSources?.extensionFiles ?? []).map(extensionPath =>
-      resolve(process.cwd(), extensionPath)
-    ),
-  )];
-  const inlineExtensions = [...(options.extensionSources?.inlineExtensions ?? [])];
-  assertConsumerInlineExtensionNames(inlineExtensions);
+  const {
+    files: additionalExtensionFiles,
+    inline: additionalInlineExtensions,
+  } = resolveAdditionalExtensions(options.extensionSources, harness.logger);
+  const isHarnessExtensionSelected = createHarnessExtensionMatcher(
+    options.extensionSources ?? {},
+  );
   const disabledExtensions = new Set<string>();
   const {
     codemodeExtension,
@@ -115,15 +198,6 @@ export async function createAgentExtensions(
       cwd: options.cwd,
       agentDir: harness.workingDir,
       settingsManager: harness.settings as unknown as SettingsManager,
-      additionalExtensionPaths: extensionFiles,
-      extensionFactories: [
-        promptExtensions.composer,
-        ...inlineExtensions,
-        codemodeExtension,
-        compactionStripExtension,
-        codexServerCompactionExtension,
-        promptExtensions.finalizer,
-      ],
       extensionsOverride: result => {
         const loadedPromptComposer = result.extensions.find(
           extension => extension.path === promptComposerPath,
@@ -134,9 +208,9 @@ export async function createAgentExtensions(
         const loadedCodemode = result.extensions.find(
           extension => extension.path === codemodePath,
         );
-        const loadedCompactionStrip = disabledExtensions.has("compaction-strip")
-          ? undefined
-          : result.extensions.find(extension => extension.path === compactionStripPath);
+        const loadedCompactionStrip = result.extensions.find(
+          extension => extension.path === compactionStripPath,
+        );
         const loadedCodexServerCompaction = result.extensions.find(
           extension => extension.path === codexServerCompactionPath,
         );
@@ -146,7 +220,6 @@ export async function createAgentExtensions(
           && extension.path !== codemodePath
           && extension.path !== compactionStripPath
           && extension.path !== codexServerCompactionPath
-          && !isExtensionDisabled(extension.path, disabledExtensions)
         );
         return {
           ...result,
@@ -178,7 +251,38 @@ export async function createAgentExtensions(
       tag: options.agent.tag,
       logger: harness.logger,
     },
-    harness.extensionFiles,
+    () => [
+      ...harness.extensionCatalog
+        .filter(isHarnessExtensionSelected)
+        .map(extension => extension.kind === "file"
+          ? {
+              name: extension.name,
+              kind: "file" as const,
+              path: extension.path,
+            }
+          : {
+              name: extension.name,
+              kind: "inline" as const,
+              extension: extension.extension,
+            }),
+      ...additionalExtensionFiles.map(extension => ({
+        name: extension.name,
+        kind: "file" as const,
+        path: extension.path,
+      })),
+      ...additionalInlineExtensions.map(extension => ({
+        name: extension.name,
+        kind: "inline" as const,
+        extension,
+      })),
+      ...createFrameworkExtensionSources(
+        promptExtensions,
+        codemodeExtension,
+        compactionStripExtension,
+        codexServerCompactionExtension,
+      ),
+    ],
+    disabledExtensions,
   );
   await resourceLoader.reload();
   return {

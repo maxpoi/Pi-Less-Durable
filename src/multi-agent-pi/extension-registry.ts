@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { realpathSync, statSync } from "node:fs";
 import {
   DefaultResourceLoader,
   type ExtensionAPI,
@@ -10,6 +11,10 @@ import {
 import type { AgentLogger } from "../logger/logger.js";
 import { assertAgentId } from "../room/loop-manager.js";
 import type { RoomId } from "../room/room-types.js";
+import {
+  getNamedInlineExtensionPath,
+  type HarnessInlineExtension,
+} from "../extensions/extension-catalog.js";
 
 export type MultiAgentPiExtensionTarget =
   | { readonly id: string }
@@ -27,7 +32,7 @@ export interface MultiAgentPiExtensionRegistration {
   readonly setup: MultiAgentPiExtensionSetup;
 }
 
-export interface MultiAgentPiResourceLoaderContext {
+interface MultiAgentPiResourceLoaderContext {
   roomId: RoomId | undefined;
   readonly id: string;
   readonly tag: string;
@@ -36,26 +41,139 @@ export interface MultiAgentPiResourceLoaderContext {
 
 const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiResourceLoaderContext>();
 
-/** Pi ResourceLoader that scopes native extension loading to one AgentLoop identity. */
+type MultiAgentPiExtensionSource =
+  | {
+      readonly name: string;
+      readonly kind: "file";
+      readonly path: string;
+    }
+  | {
+      readonly name: string;
+      readonly kind: "inline";
+      readonly extension: HarnessInlineExtension;
+    };
+
+function getExtensionPath(source: MultiAgentPiExtensionSource): string {
+  return source.kind === "file"
+    ? source.path
+    : getNamedInlineExtensionPath(source.extension);
+}
+
+function getExtensionCollisionPath(source: MultiAgentPiExtensionSource): string {
+  if (source.kind === "inline") return getExtensionPath(source);
+  try {
+    return realpathSync(source.path);
+  } catch {
+    return source.path;
+  }
+}
+
+function resolveExtensionSources(
+  sources: readonly MultiAgentPiExtensionSource[],
+  logger?: AgentLogger,
+): readonly MultiAgentPiExtensionSource[] {
+  const validSources = sources.filter(source => {
+    if (source.kind === "inline") return true;
+    try {
+      if (statSync(source.path).isFile()) return true;
+    } catch {
+      // Report through the common malformed-source path below.
+    }
+    logger?.warning(
+      "Skipping invalid extension file",
+      `"${source.path}" is not an accessible regular file`,
+    );
+    return false;
+  });
+
+  const byName = new Map<string, MultiAgentPiExtensionSource>();
+  for (const source of validSources) {
+    const previous = byName.get(source.name);
+    if (previous !== undefined) {
+      logger?.warning(
+        "Extension name collision",
+        `"${source.name}": latter extension wins`,
+      );
+    }
+    // Match Pi's built-in factory map: replace the value without moving the key.
+    byName.set(source.name, source);
+  }
+
+  const namedSources = [...byName.values()];
+  const inlineByPath = new Map<string, MultiAgentPiExtensionSource>();
+  for (const source of namedSources) {
+    if (source.kind === "file") continue;
+    const path = getExtensionPath(source);
+    if (inlineByPath.has(path)) {
+      logger?.warning(
+        "Extension inline path collision",
+        `"${path}": latter extension wins`,
+      );
+    }
+    inlineByPath.set(path, source);
+  }
+
+  // Match Pi's filesystem resource deduplication: first canonical file path wins.
+  const seenFilePaths = new Set<string>();
+  return namedSources.filter(source => {
+    if (source.kind === "inline") {
+      return inlineByPath.get(getExtensionPath(source)) === source;
+    }
+    const path = getExtensionCollisionPath(source);
+    if (seenFilePaths.has(path)) {
+      logger?.warning(
+        "Extension path collision",
+        `"${path}": first extension wins`,
+      );
+      return false;
+    }
+    seenFilePaths.add(path);
+    return true;
+  });
+}
+
+/** Pi ResourceLoader that applies ordered, latter-wins extension sources. */
 export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   readonly #context: MultiAgentPiResourceLoaderContext;
-  readonly #harnessExtensionPaths: readonly string[];
-  readonly #loopExtensionPaths: readonly string[];
+  readonly #getExtensionSources: () => readonly MultiAgentPiExtensionSource[];
   readonly #appliedPiExtensionPaths: string[];
+  readonly #appliedExtensionNames: Map<string, string>;
 
   constructor(
-    options: ConstructorParameters<typeof DefaultResourceLoader>[0],
+    options: Omit<
+      ConstructorParameters<typeof DefaultResourceLoader>[0],
+      "additionalExtensionPaths" | "extensionFactories"
+    >,
     context: MultiAgentPiResourceLoaderContext,
-    harnessExtensionPaths: readonly string[] = [],
+    getExtensionSources: () => readonly MultiAgentPiExtensionSource[],
+    disabledExtensions: ReadonlySet<string>,
   ) {
-    const loopExtensionPaths = [...(options.additionalExtensionPaths ?? [])];
-    // Pi 1.1.0 retains this constructor array and resolves its current contents on every reload.
+    const initialSources = resolveExtensionSources(getExtensionSources());
+    // Pi 1.1.0 retains these constructor values and reads their current contents on reload.
     const appliedPiExtensionPaths: string[] = [];
-    super({ ...options, additionalExtensionPaths: appliedPiExtensionPaths });
+    const appliedExtensionNames = new Map<string, string>();
+    const extensionsOverride = options.extensionsOverride;
+    super({
+      ...options,
+      additionalExtensionPaths: appliedPiExtensionPaths,
+      extensionFactories: initialSources.flatMap(source =>
+        source.kind === "inline" ? [source.extension] : []
+      ),
+      extensionsOverride: result => {
+        const ordered = extensionsOverride?.(result) ?? result;
+        return {
+          ...ordered,
+          extensions: ordered.extensions.filter(extension => {
+            const name = appliedExtensionNames.get(extension.path);
+            return name === undefined || !disabledExtensions.has(name);
+          }),
+        };
+      },
+    });
     this.#context = context;
-    this.#harnessExtensionPaths = harnessExtensionPaths;
-    this.#loopExtensionPaths = loopExtensionPaths;
+    this.#getExtensionSources = getExtensionSources;
     this.#appliedPiExtensionPaths = appliedPiExtensionPaths;
+    this.#appliedExtensionNames = appliedExtensionNames;
   }
 
   get roomId(): RoomId | undefined {
@@ -66,18 +184,31 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
     this.#context.roomId = roomId;
   }
 
+  /** Return the public identity applied to one native Pi extension path. */
+  getAppliedExtensionName(path: string): string | undefined {
+    return this.#appliedExtensionNames.get(path);
+  }
+
   override async reload(
     options?: Parameters<DefaultResourceLoader["reload"]>[0],
   ): Promise<void> {
-    const extensionPaths = [...new Set([
-      ...this.#harnessExtensionPaths,
-      ...this.#loopExtensionPaths,
-    ])];
+    const sources = resolveExtensionSources(
+      this.#getExtensionSources(),
+      this.#context.logger,
+    );
+    const extensionPaths = sources.flatMap(source => {
+      const path = getExtensionPath(source);
+      return source.kind === "file" || source.extension.builtin === true ? [path] : [];
+    });
     this.#appliedPiExtensionPaths.splice(
       0,
       this.#appliedPiExtensionPaths.length,
       ...extensionPaths,
     );
+    this.#appliedExtensionNames.clear();
+    for (const source of sources) {
+      this.#appliedExtensionNames.set(getExtensionPath(source), source.name);
+    }
 
     const { logger } = this.#context;
     await extensionLoadContext.run(this.#context, () => super.reload(options));

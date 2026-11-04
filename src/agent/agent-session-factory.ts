@@ -1,3 +1,5 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   Agent,
@@ -20,8 +22,13 @@ import {
   type ToolDefinition,
   convertToLlm,
 } from "@earendil-works/pi-coding-agent";
-import { AgentLoop, type CreateAgentLoopOptions } from "./agent-loop.js";
 import {
+  AgentLoop,
+  type AgentLoopPersistence,
+  type CreateAgentLoopOptions,
+} from "./agent-loop.js";
+import {
+  createConversationHistoryEntries,
   initializeConversationHistory,
   type ConversationHistory,
 } from "./agent-session-utils.js";
@@ -236,10 +243,24 @@ function createPiAgentSession(options: CreateNativeAgentSessionOptions): CreateA
 export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<AgentLoop> {
   const explicitDir = options.dir;
   const room = options.room;
+  if (explicitDir !== undefined && typeof explicitDir !== "string") {
+    throw new Error("AgentLoop data directory must be a string");
+  }
   const hasDir = typeof explicitDir === "string";
   const hasRoom = room !== undefined;
-  if (hasDir === hasRoom) {
-    throw new Error("AgentLoop.create() requires exactly one of dir or room");
+  const persistence: AgentLoopPersistence = options.persistence ?? "durable";
+  if (persistence !== "durable" && persistence !== "memory") {
+    throw new Error(
+      `AgentLoop "${options.agent.id}" persistence must be "durable" or "memory"`,
+    );
+  }
+  if (hasDir && hasRoom) {
+    throw new Error("AgentLoop.create() accepts only one of dir or room");
+  }
+  if (!hasDir && !hasRoom && persistence !== "memory") {
+    throw new Error(
+      "AgentLoop.create() requires dir or room unless persistence is \"memory\"",
+    );
   }
   const agent = normalizeAgentIdentity(options.agent);
   if (!options.config || typeof options.config.cwd !== "string" || !options.config.cwd.trim()) {
@@ -264,15 +285,15 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     throw new Error("Cannot create an AgentLoop while the Harness is reloading");
   }
 
-  let dir: string;
+  let loopDir: string | undefined;
   if (typeof explicitDir === "string") {
-    dir = explicitDir;
+    loopDir = resolveExplicitPersistenceDirectory(explicitDir, "AgentLoop data directory");
   } else if (room !== undefined) {
-    dir = agent.tag === PRIMARY_AGENT_TAG
+    const roomLoopDir = agent.tag === PRIMARY_AGENT_TAG
       ? room.currentDir
       : resolve(room.currentDir, "loops", agent.id);
-  } else {
-    throw new Error("AgentLoop.create() requires exactly one of dir or room");
+    loopDir = resolvePersistenceDirectory(roomLoopDir);
+    room.assertAgentLoopDirectoryAvailable(loopDir);
   }
   const systemPrompt = createAgentSystemPrompt(options.config.systemPrompt);
   const config: AgentConfig = {
@@ -284,26 +305,34 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   const settingsManager = harness.settings;
   const logger = harness.logger;
   const cwd = config.cwd;
-  const loopDir = hasDir
-    ? resolveExplicitPersistenceDirectory(dir, "AgentLoop persistence directory")
-    : resolvePersistenceDirectory(dir);
-  if (room !== undefined) room.assertAgentLoopDirectoryAvailable(loopDir);
-  const contextFile = join(loopDir, "context.jsonl");
-  if (config.initialConversationHistory) {
-    initializeConversationHistory({
-      contextFile,
-      cwd,
-      history: config.initialConversationHistory,
-    });
+  let sessionManager: SessionManager;
+  if (persistence === "memory") {
+    const initialEntries = config.initialConversationHistory === undefined
+      ? undefined
+      : createConversationHistoryEntries(cwd, config.initialConversationHistory);
+    sessionManager = SessionManager.inMemory(cwd, undefined, initialEntries);
+  } else {
+    if (loopDir === undefined) {
+      throw new Error("Durable AgentLoop requires a data directory");
+    }
+    const contextFile = join(loopDir, "context.jsonl");
+    if (config.initialConversationHistory !== undefined) {
+      initializeConversationHistory({
+        contextFile,
+        cwd,
+        history: config.initialConversationHistory,
+      });
+    }
+    sessionManager = SessionManager.open(contextFile, loopDir, cwd);
   }
-  const sessionManager = SessionManager.open(contextFile, loopDir, cwd);
   const logTag = room === undefined ? agent.tag : `${room.id}/${agent.tag}`;
   const { messages: initialMessages, restoredMessageCount } = prepareInitialSessionMessages(
     sessionManager,
     logger,
   );
   if (restoredMessageCount > 0) {
-    logger.info(`[${logTag}] Loaded ${restoredMessageCount} messages from context.jsonl`);
+    const source = persistence === "memory" ? "initial in-memory history" : "context.jsonl";
+    logger.info(`[${logTag}] Loaded ${restoredMessageCount} messages from ${source}`);
   }
 
   const backgroundTasks = new BackgroundTaskManager({
@@ -366,6 +395,22 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
     );
   }
 
+  if (loopDir === undefined) {
+    try {
+      const temporaryRoot = resolvePersistenceDirectory(tmpdir());
+      loopDir = mkdtempSync(join(temporaryRoot, "pi-less-durable-agent-loop-"));
+    } catch (error) {
+      try {
+        result.session.dispose();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `AgentLoop "${agent.id}" failed temporary-directory allocation and cleanup`,
+        );
+      }
+      throw error;
+    }
+  }
   const loop = await AgentLoop.bindSession({
     dir: loopDir,
     identity: agent,

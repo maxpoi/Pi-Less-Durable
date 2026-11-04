@@ -14,22 +14,30 @@ export function resolveMultiAgentPiWorkingDirectory(workingDir: string): string 
   return resolveDirectory(workingDir);
 }
 
-export function resolveMultiAgentPiExtensionsDirectory(
-  extensionsDir: string | undefined,
+export function resolveMultiAgentPiExtensionDirectories(
+  extensionDirs: readonly string[] | undefined,
   workingDir: string,
-): string {
-  return extensionsDir === undefined
-    ? join(workingDir, "extensions")
-    : resolveDirectory(extensionsDir);
+): string[] {
+  return extensionDirs === undefined
+    ? [join(workingDir, "extensions")]
+    : extensionDirs.map(resolveDirectory);
+}
+
+export interface DiscoveredExtensionFile {
+  readonly name: string;
+  readonly path: string;
 }
 
 /** Discover direct extension-directory children using the `<name>/index.ts` convention. */
-export function discoverExtensionFiles(extensionsDir: string): string[] {
+export function discoverExtensionFiles(extensionsDir: string): DiscoveredExtensionFile[] {
   if (!existsSync(extensionsDir)) return [];
 
   return readdirSync(extensionsDir, { withFileTypes: true })
     .filter(entry => entry.isDirectory() || entry.isSymbolicLink())
-    .map(entry => join(extensionsDir, entry.name, "index.ts"))
-    .filter(existsSync)
-    .sort((left, right) => left.localeCompare(right));
+    .map(entry => ({
+      name: entry.name,
+      path: join(extensionsDir, entry.name, "index.ts"),
+    }))
+    .filter(extension => existsSync(extension.path))
+    .sort((left, right) => left.path.localeCompare(right.path));
 }

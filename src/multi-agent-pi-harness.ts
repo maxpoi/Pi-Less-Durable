@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { defaultAgentLogger } from "./logger/logger.js";
 import type { AgentLogger } from "./logger/logger.js";
@@ -11,9 +12,16 @@ import {
 } from "./path-validation.js";
 import {
   discoverExtensionFiles,
-  resolveMultiAgentPiExtensionsDirectory,
+  resolveMultiAgentPiExtensionDirectories,
   resolveMultiAgentPiWorkingDirectory,
 } from "./runtime-path.js";
+import {
+  getValidExtensionName,
+  type HarnessExtensionCatalogEntry,
+  type HarnessExtensionCatalogSource,
+  type HarnessExtensionFile,
+  type HarnessInlineExtension,
+} from "./extensions/extension-catalog.js";
 import {
   Room,
   createRoomId,
@@ -25,10 +33,14 @@ export interface MultiAgentPiHarnessOptions {
   readonly config: MultiAgentPiConfig;
   /** Required host-owned framework persistence root. Must not be empty. */
   readonly workingDir: string;
-  /** Extension catalog root. Defaults to <workingDir>/extensions. */
-  readonly extensionsDir?: string;
+  /** Extension catalog roots. Undefined defaults to [<workingDir>/extensions]; an empty list disables file discovery. */
+  readonly extensionDirs?: readonly string[];
   /** Host-owned model/provider/auth runtime. MultiAgentPiHarness borrows but never closes it. */
   readonly modelRuntime: ModelRuntime;
+  /** Named exact file sources added to the shared Harness extension catalog. */
+  readonly additionalExtensionFiles?: readonly HarnessExtensionFile[];
+  /** Named inline sources added to the shared Harness extension catalog. */
+  readonly additionalInlineExtensions?: readonly HarnessInlineExtension[];
   /** Optional diagnostic sink shared by this singleton Harness and its framework resources. */
   readonly logger?: AgentLogger;
 }
@@ -44,11 +56,13 @@ export class MultiAgentPiHarness {
   static #instance: MultiAgentPiHarness | undefined;
 
   readonly #workingDir: string;
-  readonly #extensionsDir: string;
+  readonly #extensionDirs: readonly string[];
   readonly #modelRuntime: ModelRuntime;
   readonly #logger: AgentLogger;
-  /** Stable shared catalog reference; Harness reload replaces its contents in place. */
-  readonly #extensionFiles: string[] = [];
+  readonly #additionalExtensionFiles: Map<string, HarnessExtensionCatalogSource>;
+  readonly #additionalInlineExtensionCatalog: readonly HarnessExtensionCatalogSource[];
+  /** Stable shared catalog reference; Harness reload replaces its discovered entries in place. */
+  readonly #extensionCatalog: HarnessExtensionCatalogSource[] = [];
   readonly #settingsManager: MultiAgentPiSettingsManager;
   readonly #rooms = new Map<RoomId, Room>();
   #reloading = false;
@@ -59,16 +73,16 @@ export class MultiAgentPiHarness {
     }
 
     assertExplicitPersistencePath(options.workingDir, "Harness working directory");
-    if (options.extensionsDir !== undefined) {
-      assertExplicitPersistencePath(options.extensionsDir, "Harness extensions directory");
+    for (const extensionDir of options.extensionDirs ?? []) {
+      assertExplicitPersistencePath(extensionDir, "Harness extension directory");
     }
     this.#workingDir = resolvePersistenceDirectory(
       resolveMultiAgentPiWorkingDirectory(options.workingDir),
     );
-    this.#extensionsDir = resolveMultiAgentPiExtensionsDirectory(
-      options.extensionsDir,
+    this.#extensionDirs = Object.freeze(resolveMultiAgentPiExtensionDirectories(
+      options.extensionDirs,
       this.#workingDir,
-    );
+    ));
     this.#modelRuntime = options.modelRuntime;
     this.#settingsManager = new MultiAgentPiSettingsManager(
       options.config,
@@ -77,7 +91,13 @@ export class MultiAgentPiHarness {
       ),
     );
     this.#logger = options.logger ?? defaultAgentLogger;
-    this.#refreshExtensionFiles();
+    this.#additionalExtensionFiles = this.#createAdditionalExtensionFiles(
+      options.additionalExtensionFiles ?? [],
+    );
+    this.#additionalInlineExtensionCatalog = this.#createAdditionalInlineExtensionCatalog(
+      options.additionalInlineExtensions ?? [],
+    );
+    this.#refreshExtensionCatalog();
     MultiAgentPiHarness.#instance = this;
   }
 
@@ -93,8 +113,8 @@ export class MultiAgentPiHarness {
     return this.#workingDir;
   }
 
-  get extensionsDir(): string {
-    return this.#extensionsDir;
+  get extensionDirs(): readonly string[] {
+    return this.#extensionDirs;
   }
 
   get config(): Readonly<MultiAgentPiConfig> {
@@ -115,9 +135,45 @@ export class MultiAgentPiHarness {
     return this.#logger;
   }
 
+  /** Return the complete Harness-discovered and consumer-provided extension catalog. */
+  listExtensions(): readonly HarnessExtensionCatalogEntry[] {
+    return Object.freeze(this.#extensionCatalog.map(extension => Object.freeze({
+      name: extension.name,
+      kind: extension.kind,
+      source: extension.source,
+      ...(extension.kind === "file" ? { path: extension.path } : {}),
+    })));
+  }
+
+  /** Add one named exact file to the shared catalog; existing loops adopt it on reload. */
+  addExtensionFile(extension: HarnessExtensionFile): void {
+    this.#assertExtensionCatalogMutable();
+    const source = this.#createAdditionalExtensionFile(extension);
+    if (source === undefined) return;
+    if (this.#additionalExtensionFiles.has(source.name)) {
+      this.#logger.warning(
+        "Extension name collision",
+        `Harness additional file "${source.name}" was replaced by a later file`,
+      );
+    }
+    // Match Pi's built-in factory map: replace the value without moving the key.
+    this.#additionalExtensionFiles.set(source.name, source);
+    this.#refreshExtensionCatalog();
+  }
+
+  /** Remove one consumer-added exact file; existing loops drop it on reload. */
+  removeExtensionFile(name: string): boolean {
+    this.#assertExtensionCatalogMutable();
+    const source = this.#additionalExtensionFiles.get(name);
+    if (source === undefined) return false;
+    this.#additionalExtensionFiles.delete(name);
+    this.#refreshExtensionCatalog();
+    return true;
+  }
+
   /** @internal Stable shared extension catalog consumed directly by the AgentLoop factory. */
-  get extensionFiles(): readonly string[] {
-    return this.#extensionFiles;
+  get extensionCatalog(): readonly HarnessExtensionCatalogSource[] {
+    return this.#extensionCatalog;
   }
 
   /** @internal AgentLoop construction is not admitted during Harness reload. */
@@ -249,7 +305,7 @@ export class MultiAgentPiHarness {
     config: MultiAgentPiConfig | undefined,
   ): Promise<void> {
     try {
-      this.#refreshExtensionFiles();
+      this.#refreshExtensionCatalog();
       if (targetedRoom !== undefined) {
         await targetedRoom.reload(agentId);
         return;
@@ -273,9 +329,109 @@ export class MultiAgentPiHarness {
     }
   }
 
-  #refreshExtensionFiles(): void {
-    const extensionFiles = discoverExtensionFiles(this.extensionsDir);
-    this.#extensionFiles.splice(0, this.#extensionFiles.length, ...extensionFiles);
+  #createAdditionalExtensionFiles(
+    extensions: readonly HarnessExtensionFile[],
+  ): Map<string, HarnessExtensionCatalogSource> {
+    const sources = new Map<string, HarnessExtensionCatalogSource>();
+    for (const extension of extensions) {
+      const source = this.#createAdditionalExtensionFile(extension);
+      if (source === undefined) continue;
+      if (sources.has(source.name)) {
+        this.#logger.warning(
+          "Extension name collision",
+          `Harness additional file "${source.name}" was replaced by a later file`,
+        );
+      }
+      // Match Pi's built-in factory map: replace the value without moving the key.
+      sources.set(source.name, source);
+    }
+    return sources;
+  }
+
+  #createAdditionalExtensionFile(
+    extension: HarnessExtensionFile,
+  ): HarnessExtensionCatalogSource | undefined {
+    const name = getValidExtensionName(extension);
+    if (name === undefined) {
+      this.#logger.warning(
+        "Skipping invalid Harness extension",
+        "Additional extension files require a non-empty name",
+      );
+      return undefined;
+    }
+    if (typeof extension.path !== "string" || !extension.path.trim()) {
+      this.#logger.warning(
+        "Skipping invalid Harness extension",
+        `Additional extension file "${name}" requires a non-empty path`,
+      );
+      return undefined;
+    }
+    return {
+      name,
+      kind: "file",
+      source: "additional",
+      path: resolve(extension.path),
+    };
+  }
+
+  #createAdditionalInlineExtensionCatalog(
+    extensions: readonly HarnessInlineExtension[],
+  ): readonly HarnessExtensionCatalogSource[] {
+    const sources: HarnessExtensionCatalogSource[] = [];
+    for (const extension of extensions) {
+      const source = this.#createAdditionalInlineExtension(extension);
+      if (source !== undefined) sources.push(source);
+    }
+    return Object.freeze(sources);
+  }
+
+  #createAdditionalInlineExtension(
+    extension: HarnessInlineExtension,
+  ): HarnessExtensionCatalogSource | undefined {
+    const name = getValidExtensionName(extension);
+    if (name === undefined) {
+      this.#logger.warning(
+        "Skipping invalid Harness extension",
+        "Inline extensions require a non-empty name",
+      );
+      return undefined;
+    }
+    if (typeof extension.factory !== "function") {
+      this.#logger.warning(
+        "Skipping invalid Harness extension",
+        `Inline extension "${name}" requires a factory`,
+      );
+      return undefined;
+    }
+    return {
+      name,
+      kind: "inline",
+      source: "additional",
+      extension: { ...extension },
+    };
+  }
+
+  #refreshExtensionCatalog(): void {
+    const discovered: HarnessExtensionCatalogSource[] = this.extensionDirs.flatMap(
+      extensionDir => discoverExtensionFiles(extensionDir).map(extension => ({
+        name: extension.name,
+        kind: "file" as const,
+        source: "discovered" as const,
+        path: extension.path,
+      })),
+    );
+    const nextCatalog = [
+      ...discovered,
+      ...this.#additionalExtensionFiles.values(),
+      ...this.#additionalInlineExtensionCatalog,
+    ];
+    this.#extensionCatalog.splice(0, this.#extensionCatalog.length, ...nextCatalog);
+  }
+
+  #assertExtensionCatalogMutable(): void {
+    if (this.#reloading) {
+      throw new Error("Cannot modify the Harness extension catalog while the Harness is reloading");
+    }
   }
 
 }

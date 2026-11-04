@@ -1,8 +1,6 @@
-import { basename, dirname, extname } from "node:path";
 import {
   createCodemodeExtension,
   type ExtensionFactory,
-  type InlineExtension,
   type ModelRuntime,
   type SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -27,35 +25,7 @@ export interface CreateBuiltInExtensionsOptions {
 export const FRAMEWORK_EXTENSION_NAME_PREFIX = "multi-agent-pi-";
 export const CODEMODE_EXTENSION_NAME = "codemode";
 export const CODEX_SERVER_COMPACTION_EXTENSION_NAME = "codex-server-compaction";
-
-/** Match public disable names against framework inline and consumer source paths. */
-export function isExtensionDisabled(
-  path: string,
-  disabledExtensions: ReadonlySet<string>,
-): boolean {
-  const inlinePrefix = "<inline:";
-  if (path.startsWith(inlinePrefix) && path.endsWith(">")) {
-    const inlineName = path.slice(inlinePrefix.length, -1);
-    if (
-      inlineName === `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEMODE_EXTENSION_NAME}`
-      || inlineName.startsWith(
-        `${FRAMEWORK_EXTENSION_NAME_PREFIX}${CODEX_SERVER_COMPACTION_EXTENSION_NAME}-`,
-      )
-    ) {
-      return false;
-    }
-    const publicName = inlineName.startsWith(FRAMEWORK_EXTENSION_NAME_PREFIX)
-      ? inlineName.slice(FRAMEWORK_EXTENSION_NAME_PREFIX.length)
-      : inlineName;
-    return disabledExtensions.has(publicName);
-  }
-
-  const fileName = basename(path);
-  const sourceName = fileName.slice(0, fileName.length - extname(fileName).length);
-  const directoryName = basename(dirname(path));
-  if (sourceName === "index") return disabledExtensions.has(directoryName);
-  return disabledExtensions.has(directoryName) || disabledExtensions.has(sourceName);
-}
+export const COMPACTION_STRIP_EXTENSION_NAME = "compaction-strip";
 
 interface NamedInlineExtension {
   readonly name: string;
@@ -112,7 +82,7 @@ export function createBuiltInExtensions(
     factory: createCodemodeExtension(),
   };
   const compactionStripExtension = createDisableableExtension(
-    "compaction-strip",
+    COMPACTION_STRIP_EXTENSION_NAME,
     pi => setupCompactionStripExtension(pi, logger),
     disabledExtensions,
   );
@@ -128,19 +98,4 @@ export function createBuiltInExtensions(
     codexServerCompactionExtension,
     codexServerCompaction,
   };
-}
-
-/** Reject consumer extension names reserved for framework-owned inline extensions. */
-export function assertConsumerInlineExtensionNames(
-  extensions: readonly InlineExtension[],
-): void {
-  const reserved = extensions.find(extension =>
-    typeof extension !== "function"
-    && extension.name.startsWith(FRAMEWORK_EXTENSION_NAME_PREFIX)
-  );
-  if (reserved === undefined || typeof reserved === "function") return;
-  throw new Error(
-    `Consumer inline extension name "${reserved.name}" is reserved; names beginning with `
-      + `"${FRAMEWORK_EXTENSION_NAME_PREFIX}" are owned by Pi-Less-Durable`,
-  );
 }

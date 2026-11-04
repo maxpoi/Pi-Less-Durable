@@ -1,5 +1,8 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentLoop } from "../agent/agent-loop.js";
+import type {
+  AgentLoop,
+  AgentLoopPersistence,
+} from "../agent/agent-loop.js";
 import type {
   MultiAgentPiHandler,
   RoomContext,
@@ -31,6 +34,8 @@ export interface RoomEnqueuePromptOptions {
 export interface PrimaryAgentLoopOptions {
   readonly agent: AgentIdentity;
   readonly config: AgentConfig;
+  /** Native Pi transcript persistence. Defaults to durable. */
+  readonly persistence?: AgentLoopPersistence;
   readonly extensionSources?: AgentLoopExtensionSources;
 }
 
