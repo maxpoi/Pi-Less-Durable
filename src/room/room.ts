@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { CompactionResult } from "@earendil-works/pi-coding-agent";
-import { issueMultiAgentPiEvent } from "../multi-agent-pi/api.js";
+import { createRoomContext } from "../multi-agent-pi/context-factory.js";
 import {
   AgentLoop,
   type AgentLoopQueuedPromptType,
@@ -349,11 +349,11 @@ export class Room {
     };
   }
 
-  /** @internal Register an owner-local Room lifecycle listener. */
+  /** Register a Room-owned reset-admission listener. */
   on(event: "before_room_reset", handler: BeforeRoomResetHandler): () => void;
-  /** @internal Register an owner-local Room lifecycle listener. */
+  /** Register a Room-owned completed-reset listener. */
   on(event: "room_reset_end", handler: RoomResetEndHandler): () => void;
-  /** @internal Register an owner-local Room lifecycle listener. */
+  /** Register a Room-owned completed-restore listener. */
   on(event: "session_restore_end", handler: SessionRestoreEndHandler): () => void;
   on(
     event: "before_room_reset" | "room_reset_end" | "session_restore_end",
@@ -510,28 +510,17 @@ export class Room {
       roomDir: this.roomDir,
       currentDir: this.currentDir,
     };
-    await issueMultiAgentPiEvent(
-      event,
-      this,
-      async context => {
-        for (const handler of [...this.#beforeResetHandlers]) {
-          try {
-            await handler(event, context);
-          } catch (error) {
-            MultiAgentPiHarness.instance.logger.warning(
-              `[${this.id}] before_room_reset handler failed`,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }
-      },
-      error => {
+    const context = createRoomContext(this);
+    for (const handler of [...this.#beforeResetHandlers]) {
+      try {
+        await handler(event, context);
+      } catch (error) {
         MultiAgentPiHarness.instance.logger.warning(
-          `[${this.id}] public before_room_reset handler failed`,
+          `[${this.id}] before_room_reset handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      },
-    );
+      }
+    }
   }
 
   async #emitResetEnd(archiveName: string): Promise<void> {
@@ -542,28 +531,17 @@ export class Room {
       currentDir: this.currentDir,
       archiveName,
     };
-    await issueMultiAgentPiEvent(
-      event,
-      this,
-      async context => {
-        for (const handler of [...this.#resetEndHandlers]) {
-          try {
-            await handler(event, context);
-          } catch (error) {
-            MultiAgentPiHarness.instance.logger.warning(
-              `[${this.id}] room_reset_end handler failed`,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }
-      },
-      error => {
+    const context = createRoomContext(this);
+    for (const handler of [...this.#resetEndHandlers]) {
+      try {
+        await handler(event, context);
+      } catch (error) {
         MultiAgentPiHarness.instance.logger.warning(
-          `[${this.id}] public room_reset_end handler failed`,
+          `[${this.id}] room_reset_end handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      },
-    );
+      }
+    }
   }
 
   async #emitRestoreEnd(archiveName: string): Promise<void> {
@@ -574,28 +552,17 @@ export class Room {
       currentDir: this.currentDir,
       archiveName,
     };
-    await issueMultiAgentPiEvent(
-      event,
-      this,
-      async context => {
-        for (const handler of [...this.#restoreEndHandlers]) {
-          try {
-            await handler(event, context);
-          } catch (error) {
-            MultiAgentPiHarness.instance.logger.warning(
-              `[${this.id}] session_restore_end handler failed`,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }
-      },
-      error => {
+    const context = createRoomContext(this);
+    for (const handler of [...this.#restoreEndHandlers]) {
+      try {
+        await handler(event, context);
+      } catch (error) {
         MultiAgentPiHarness.instance.logger.warning(
-          `[${this.id}] public session_restore_end handler failed`,
+          `[${this.id}] session_restore_end handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      },
-    );
+      }
+    }
   }
 
   #preflightReload(agentId: string | undefined): AgentRegistration[] {

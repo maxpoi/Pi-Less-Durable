@@ -6,7 +6,7 @@ import type {
 import type {
   MultiAgentPiHandler,
   RoomContext,
-} from "../multi-agent-pi/context.js";
+} from "../multi-agent-pi/types.js";
 import type {
   AgentConfig,
   AgentLoopExtensionSources,

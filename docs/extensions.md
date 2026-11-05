@@ -50,11 +50,10 @@ extensionSources: {
 }
 ```
 
-Extensions resolve in this order: selected Harness catalog entries, loop-specific files, loop-specific inline entries, then framework extensions. Name collisions mirror Pi's built-in factory map: normal `Map.set()` makes the latter definition win without moving the key's original order. Inline native-path collisions also use latter-wins resolution, ensuring a framework factory cannot be displaced through its private Pi name. File-path collisions mirror Pi's resource deduplication: regular file targets use `realpathSync()` identity and the first canonical path wins. All collisions are logged without rejecting AgentLoop construction or reload; losing files are not imported and losing inline factories are not executed. File sources that are missing, inaccessible, directories, or otherwise not regular files are logged and skipped, as are malformed consumer entries without a usable name, path, or inline factory.
-
-Pi treats an inline object with `builtin: true` as the implementation of the synthetic `builtin:<name>` resource rather than as an ordinary inline factory. Pi-Less-Durable explicitly activates that resource whenever the corresponding winning entry is selected or supplied as a loop-specific inline addition.
-
-Each AgentLoop's ResourceLoader owns the applied native-path-to-public-name snapshot from its latest reload. Catalog mutation does not change the identity of a still-loaded source; the next reload replaces the paths and identities together. Temporary disablement resolves only through this applied snapshot, so `{ name: "audit", path: "/plugins/security.ts" }` is addressed as `audit`, never as `security`.
+Extension collisions follow this rule:
+1. file type extensions: first win
+2. inline extensions: last win
+3. framework built in extensions always win
 
 ## Targeted behavior
 
@@ -82,15 +81,65 @@ Targeted setup matches an AgentLoop by `{ id }` or `{ tag }`. Target matching ha
 
 ## Framework events
 
-External consumers observe AgentLoop and Room events through the process-wide API and filter by context identity:
+Extension sources may observe only their current AgentLoop's completed Rounds:
 
 ```ts
-const unsubscribe = multiAgentPi.on("agent_round_end", (event, context) => {
-  if (context.roomId !== roomId || context.agentId !== agentId) return;
-  handleRound(event.result);
-});
+export default function extension(pi: ExtensionAPI) {
+  multiAgentPi.on("agent_round_end", (event, context) => {
+    handleRound(context.agentId, event.result);
+  });
+}
 ```
 
+These handlers are collected into the current AgentLoop's extension record. AgentLoop, Room, and Harness reload replace that record instead of appending handlers from repeated factory execution. Direct `loop.on("agent_round_end", handler)` registrations remain owned by the AgentLoop object.
+
+### Extension event load flow
+
+Every AgentLoop **ResourceLoader** owns one active extension-event record. Initial load and reload use the same prepare-then-swap flow:
+
+```ts
+// a module scoped static AsyncLocalStorage in place.
+
+→ create empty replacement Map: `storage` = AsyncLocalStorage()
+→ clear the active previous Map
+→ enter `storage` with { agent, eventHandlers: replacement }
+→ Pi imports the extension file and uses Jiti and executes each selected factory
+→ multiAgentPi.on(...) writes into `storage`
+→ Pi reload succeeds
+→ active event record = replacement Map
+```
+
+```ts
+const replacement = new Map();
+activeEventHandlers.clear();
+
+await extensionLoadContext.run(
+  { agent: agentContext, eventHandlers: replacement },
+  () => piResourceLoader.reload(),
+);
+
+activeEventHandlers = replacement;
+```
+
+Factory registration resolves through the current load context:
+
+```text
+multiAgentPi.on(event, handler)
+→ registerAgentLoopExtensionEventHandler(event, handler)
+→ extensionLoadContext.getStore()
+→ replacement[event].add(handler)
+```
+
+Awaited asynchronous factories retain the same load context:
+
+```ts
+export default async function extension() {
+  await prepare();
+  multiAgentPi.on("agent_round_end", handler);
+}
+```
+
+A reload clears the active old Map before loading. A successful reload installs the replacement Map. A rejected reload leaves no extension-owned framework handlers active.
 
 ## Extension order
 
@@ -115,20 +164,6 @@ Extension can be disabled by `loop.disable(name)` or `room.disable(name, loopId?
 
 - Harness reload refreshes the shared extension catalog and reloads its selected scope.
 - Room reload orders and forwards reload to registered loops without filesystem rediscovery.
-- AgentLoop reload uses the current catalog, clears its temporary disabled-extension set, and invokes native `AgentSession.reload()`.
+- AgentLoop reload uses the current catalog, clears its temporary disabled-extension set, replaces extension-owned framework handlers, and invokes native `AgentSession.reload()`.
 
 A reload can only happen if all levels below are idle. For example, a room level reload will check all its registered loops have no background tasks and all idle. A harness level reload will check all rooms. 
-
-
-## Source entry points
-
-- Central callback and extension type exports: `src/multi-agent-pi/api.ts`
-- Callback context definitions and construction: `src/multi-agent-pi/context.ts`
-- AgentSession assembly and extension ordering: `src/agent/agent-session-factory.ts`
-- Reloadable explicit source materialization: `src/multi-agent-pi/extension-registry.ts`
-- Runtime path resolution and extension discovery: `src/runtime-path.ts`
-- Framework-owned inline extensions: `src/extensions/built-in-extensions.ts`
-- Opt-in extension examples: `examples/extensions/`
-- Per-AgentLoop temporary extension policy: `src/agent/agent-loop.ts`
-- Agent identity binding and targeted setup: `src/multi-agent-pi/extension-registry.ts`
-- Installed Pi resource-loader and dispatch contracts: `@earendil-works/pi-coding-agent`

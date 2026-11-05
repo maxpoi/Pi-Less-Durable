@@ -1,30 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  createAgentLoopContext,
-  createRoomContext,
-  type AgentLoopContext,
-  type MultiAgentPiHandler,
-  type RoomContext,
-} from "./context.js";
 import type {
-  AgentLoop,
-  AgentLoopRoundEndEvent,
-  AgentLoopRoundEndHandler,
-} from "../agent/agent-loop.js";
+  AgentLoopContext,
+  MultiAgentPiEventHandler,
+  MultiAgentPiEventType,
+} from "./types.js";
 import {
   getContext,
   register,
+  registerAgentLoopExtensionEventHandler,
   type MultiAgentPiExtensionRegistration,
 } from "./extension-registry.js";
-import type {
-  BeforeRoomResetEvent,
-  BeforeRoomResetHandler,
-  RoomResetEndEvent,
-  RoomResetEndHandler,
-  SessionRestoreEndEvent,
-  SessionRestoreEndHandler,
-} from "../room/room-types.js";
-import type { Room } from "../room/room.js";
 
 export type {
   AfterProviderResponseEvent,
@@ -101,9 +86,13 @@ export type {
 export type {
   AgentLoopContext,
   BackgroundTaskRunContext,
+  MultiAgentPiEvent,
+  MultiAgentPiEventHandler,
+  MultiAgentPiEventMap,
+  MultiAgentPiEventType,
   MultiAgentPiHandler,
   RoomContext,
-} from "./context.js";
+} from "./types.js";
 export type {
   AgentLoopRoundEndEvent,
   AgentLoopRoundEndHandler,
@@ -117,42 +106,6 @@ export type {
   BackgroundTaskAbortEvent,
   BackgroundTaskOptions,
 } from "../room/background-task-manager.js";
-export type {
-  BeforeRoomResetEvent,
-  BeforeRoomResetHandler,
-  RoomResetEndEvent,
-  RoomResetEndHandler,
-  SessionRestoreEndEvent,
-  SessionRestoreEndHandler,
-} from "../room/room-types.js";
-
-export interface MultiAgentPiEventMap {
-  readonly agent_round_end: {
-    readonly event: AgentLoopRoundEndEvent;
-    readonly context: AgentLoopContext;
-  };
-  readonly before_room_reset: {
-    readonly event: BeforeRoomResetEvent;
-    readonly context: RoomContext;
-  };
-  readonly room_reset_end: {
-    readonly event: RoomResetEndEvent;
-    readonly context: RoomContext;
-  };
-  readonly session_restore_end: {
-    readonly event: SessionRestoreEndEvent;
-    readonly context: RoomContext;
-  };
-}
-
-export type MultiAgentPiEventType = keyof MultiAgentPiEventMap;
-export type MultiAgentPiEvent = MultiAgentPiEventMap[MultiAgentPiEventType]["event"];
-export type MultiAgentPiEventHandler<TEvent extends MultiAgentPiEventType> =
-  MultiAgentPiHandler<
-    MultiAgentPiEventMap[TEvent]["event"],
-    MultiAgentPiEventMap[TEvent]["context"]
-  >;
-
 export interface MultiAgentPiAPI {
   /** Return this extension load's current AgentLoop context. */
   getContext(): AgentLoopContext;
@@ -163,128 +116,33 @@ export interface MultiAgentPiAPI {
     registration: MultiAgentPiExtensionRegistration,
   ): Promise<void>;
 
-  /** Observe completed Rounds. Duplicate handler registration throws. */
-  on(event: "agent_round_end", handler: AgentLoopRoundEndHandler): () => void;
-  /** Observe reset admission. Duplicate handler registration throws. */
-  on(event: "before_room_reset", handler: BeforeRoomResetHandler): () => void;
-  /** Observe completed resets. Duplicate handler registration throws. */
-  on(event: "room_reset_end", handler: RoomResetEndHandler): () => void;
-  /** Observe an archive becoming the active Room session. Duplicate handler registration throws. */
-  on(event: "session_restore_end", handler: SessionRestoreEndHandler): () => void;
+  /** Observe one framework event for the AgentLoop currently loading this extension. */
+  on<TEvent extends MultiAgentPiEventType>(
+    event: TEvent,
+    handler: MultiAgentPiEventHandler<TEvent>,
+  ): () => void;
 }
 
 /** Existing extension-facing name for the unified MultiAgentPi API. */
 export type MultiAgentPiExtensionAPI = MultiAgentPiAPI;
 
-type AnyMultiAgentPiEventHandler = MultiAgentPiHandler<
-  MultiAgentPiEvent,
-  AgentLoopContext | RoomContext
->;
+const AGENT_LOOP_EXTENSION_EVENT_TYPES = new Set<MultiAgentPiEventType>([
+  "agent_round_end",
+]);
 
-const eventHandlers = new Map<
-  MultiAgentPiEventType,
-  Set<AnyMultiAgentPiEventHandler>
->();
-
-function on(
-  event: "agent_round_end",
-  handler: AgentLoopRoundEndHandler,
-): () => void;
-function on(
-  event: "before_room_reset",
-  handler: BeforeRoomResetHandler,
-): () => void;
-function on(
-  event: "room_reset_end",
-  handler: RoomResetEndHandler,
-): () => void;
-function on(
-  event: "session_restore_end",
-  handler: SessionRestoreEndHandler,
-): () => void;
-function on(
-  event: MultiAgentPiEventType,
-  handler:
-    | AgentLoopRoundEndHandler
-    | BeforeRoomResetHandler
-    | RoomResetEndHandler
-    | SessionRestoreEndHandler,
+function on<TEvent extends MultiAgentPiEventType>(
+  event: TEvent,
+  handler: MultiAgentPiEventHandler<TEvent>,
 ): () => void {
-  let handlers = eventHandlers.get(event);
-  if (handlers === undefined) {
-    handlers = new Set();
-    eventHandlers.set(event, handlers);
+  if (!AGENT_LOOP_EXTENSION_EVENT_TYPES.has(event)) {
+    throw new Error(`Unknown AgentLoop extension event: ${String(event)}`);
   }
-  const registeredHandler = handler as AnyMultiAgentPiEventHandler;
-  if (handlers.has(registeredHandler)) {
-    throw new Error(`Handler is already registered for MultiAgentPi event "${event}"`);
-  }
-  handlers.add(registeredHandler);
-  return () => {
-    handlers.delete(registeredHandler);
-    if (handlers.size === 0) eventHandlers.delete(event);
-  };
+  return registerAgentLoopExtensionEventHandler(event, handler);
 }
 
-/** Pi extension registration plus process-wide framework event observation. */
+/** AgentLoop-scoped framework behavior available while one Pi extension is loading. */
 export const multiAgentPi: MultiAgentPiAPI = Object.freeze({
   getContext,
   register,
   on,
 });
-
-/** @internal Issue one AgentLoop event through local and process-wide scopes. */
-export function issueMultiAgentPiEvent(
-  event: AgentLoopRoundEndEvent,
-  issuer: AgentLoop,
-  issueLocally: (context: AgentLoopContext) => void | Promise<void>,
-  onPublicError: (error: unknown) => void,
-): Promise<void>;
-/** @internal Issue one Room event through local and process-wide scopes. */
-export function issueMultiAgentPiEvent(
-  event: BeforeRoomResetEvent,
-  issuer: Room,
-  issueLocally: (context: RoomContext) => void | Promise<void>,
-  onPublicError: (error: unknown) => void,
-): Promise<void>;
-/** @internal Issue one Room event through local and process-wide scopes. */
-export function issueMultiAgentPiEvent(
-  event: RoomResetEndEvent,
-  issuer: Room,
-  issueLocally: (context: RoomContext) => void | Promise<void>,
-  onPublicError: (error: unknown) => void,
-): Promise<void>;
-/** @internal Issue one Room event through local and process-wide scopes. */
-export function issueMultiAgentPiEvent(
-  event: SessionRestoreEndEvent,
-  issuer: Room,
-  issueLocally: (context: RoomContext) => void | Promise<void>,
-  onPublicError: (error: unknown) => void,
-): Promise<void>;
-export async function issueMultiAgentPiEvent(
-  event: MultiAgentPiEvent,
-  issuer: AgentLoop | Room,
-  issueLocally:
-    | ((context: AgentLoopContext) => void | Promise<void>)
-    | ((context: RoomContext) => void | Promise<void>),
-  onPublicError: (error: unknown) => void,
-): Promise<void> {
-  const context = event.type === "agent_round_end"
-    ? createAgentLoopContext(issuer as AgentLoop)
-    : createRoomContext(issuer as Room);
-  await (
-    issueLocally as (
-      context: AgentLoopContext | RoomContext,
-    ) => void | Promise<void>
-  )(context);
-
-  const handlers = eventHandlers.get(event.type);
-  if (handlers === undefined) return;
-  for (const handler of [...handlers]) {
-    try {
-      await handler(event, context);
-    } catch (error) {
-      onPublicError(error);
-    }
-  }
-}

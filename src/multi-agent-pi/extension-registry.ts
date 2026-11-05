@@ -4,10 +4,14 @@ import {
   DefaultResourceLoader,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import {
-  createAgentLoopContext,
-  type AgentLoopContext,
-} from "./context.js";
+import { createAgentLoopContext } from "./context-factory.js";
+import type {
+  AgentLoopContext,
+  MultiAgentPiEvent,
+  MultiAgentPiEventHandler,
+  MultiAgentPiEventType,
+  MultiAgentPiHandler,
+} from "./types.js";
 import type { AgentLogger } from "../logger/logger.js";
 import { assertAgentId } from "../room/loop-manager.js";
 import type { RoomId } from "../room/room-types.js";
@@ -39,7 +43,22 @@ interface MultiAgentPiResourceLoaderContext {
   readonly logger: AgentLogger;
 }
 
-const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiResourceLoaderContext>();
+type AnyAgentLoopExtensionEventHandler = MultiAgentPiHandler<
+  MultiAgentPiEvent,
+  AgentLoopContext
+>;
+
+type AgentLoopExtensionEventHandlers = Map<
+  MultiAgentPiEventType,
+  Set<AnyAgentLoopExtensionEventHandler>
+>;
+
+interface MultiAgentPiExtensionLoadContext {
+  readonly agent: MultiAgentPiResourceLoaderContext;
+  readonly eventHandlers: AgentLoopExtensionEventHandlers;
+}
+
+const extensionLoadContext = new AsyncLocalStorage<MultiAgentPiExtensionLoadContext>();
 
 type MultiAgentPiExtensionSource =
   | {
@@ -138,6 +157,7 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   readonly #getExtensionSources: () => readonly MultiAgentPiExtensionSource[];
   readonly #appliedPiExtensionPaths: string[];
   readonly #appliedExtensionNames: Map<string, string>;
+  #eventHandlers: AgentLoopExtensionEventHandlers = new Map();
 
   constructor(
     options: Omit<
@@ -189,6 +209,18 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
     return this.#appliedExtensionNames.get(path);
   }
 
+  /** @internal Return one event's handlers from this AgentLoop's latest extension load. */
+  getExtensionEventHandlers<TEvent extends MultiAgentPiEventType>(
+    event: TEvent,
+  ): readonly MultiAgentPiEventHandler<TEvent>[] {
+    return [...(this.#eventHandlers.get(event) ?? [])] as MultiAgentPiEventHandler<TEvent>[];
+  }
+
+  /** @internal Release all extension-owned AgentLoop handlers during destruction. */
+  clearExtensionEventHandlers(): void {
+    this.#eventHandlers.clear();
+  }
+
   override async reload(
     options?: Parameters<DefaultResourceLoader["reload"]>[0],
   ): Promise<void> {
@@ -211,7 +243,13 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
     }
 
     const { logger } = this.#context;
-    await extensionLoadContext.run(this.#context, () => super.reload(options));
+    const eventHandlers: AgentLoopExtensionEventHandlers = new Map();
+    this.#eventHandlers.clear();
+    await extensionLoadContext.run(
+      { agent: this.#context, eventHandlers },
+      () => super.reload(options),
+    );
+    this.#eventHandlers = eventHandlers;
 
     const loadedExtensions = this.getExtensions();
     for (const error of loadedExtensions.errors) {
@@ -223,7 +261,7 @@ export class MultiAgentPiResourceLoader extends DefaultResourceLoader {
   }
 }
 
-function requireAgentContext(): MultiAgentPiResourceLoaderContext {
+function requireExtensionLoadContext(): MultiAgentPiExtensionLoadContext {
   const context = extensionLoadContext.getStore();
   if (!context) {
     throw new Error(
@@ -233,9 +271,40 @@ function requireAgentContext(): MultiAgentPiResourceLoaderContext {
   return context;
 }
 
+function requireAgentContext(): MultiAgentPiResourceLoaderContext {
+  return requireExtensionLoadContext().agent;
+}
+
 /** @internal */
 export function getContext(): AgentLoopContext {
   return createAgentLoopContext(requireAgentContext());
+}
+
+/** @internal Register one framework event handler in the current AgentLoop load record. */
+export function registerAgentLoopExtensionEventHandler<
+  TEvent extends MultiAgentPiEventType,
+>(
+  event: TEvent,
+  handler: MultiAgentPiEventHandler<TEvent>,
+): () => void {
+  if (typeof handler !== "function") {
+    throw new Error(`multiAgentPi.on requires a handler for "${event}"`);
+  }
+  const eventHandlers = requireExtensionLoadContext().eventHandlers;
+  let handlers = eventHandlers.get(event);
+  if (handlers === undefined) {
+    handlers = new Set();
+    eventHandlers.set(event, handlers);
+  }
+  const registeredHandler = handler as AnyAgentLoopExtensionEventHandler;
+  if (handlers.has(registeredHandler)) {
+    throw new Error(`Handler is already registered for MultiAgentPi event "${event}"`);
+  }
+  handlers.add(registeredHandler);
+  return () => {
+    handlers.delete(registeredHandler);
+    if (handlers.size === 0) eventHandlers.delete(event);
+  };
 }
 
 function assertRegistration(

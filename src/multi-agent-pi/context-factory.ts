@@ -1,31 +1,9 @@
 import type { RoomId } from "../room/room-types.js";
-
-/** Common callback shape; result semantics belong to each event dispatcher. */
-export type MultiAgentPiHandler<E, C, R = undefined> = (
-  event: E,
-  context: C,
-) => Promise<R | void> | R | void;
-
-/** Current AgentLoop identity available to callbacks issued for that loop. */
-export interface AgentLoopContext {
-  readonly roomId: RoomId | undefined;
-  readonly agentId: string;
-  readonly agentTag: string;
-}
-
-/** Current Room identity available to callbacks issued by that Room. */
-export interface RoomContext {
-  readonly roomId: RoomId;
-}
-
-/** Owner and task identity available throughout one background task. */
-export interface BackgroundTaskRunContext {
-  readonly roomId: RoomId | undefined;
-  readonly agentId: string | undefined;
-  readonly id: string;
-  readonly label: string;
-  readonly signal: AbortSignal;
-}
+import type {
+  AgentLoopContext,
+  BackgroundTaskRunContext,
+  RoomContext,
+} from "./types.js";
 
 interface AgentLoopContextSource {
   readonly roomId: RoomId | undefined;
