@@ -64,7 +64,7 @@ Enqueue prompt while loop is idle will automatically prompt it. Enqueue means pu
 
 ## MultiAgentPi (../extensions.md)
 
-Like Pi's extension system, `pi.on()`, we have `multiAgentPi.on()`. It works just like how you write extensions inside Pi. It provides room and agent loop context on demands besides Pi's extension context. It provides MultiAgentPi framework's custom events as well.
+Extensions use native `pi.on()` for Pi events and `multiAgentPi.register()` for ID/tag-targeted Pi setup. `multiAgentPi.on` also provides some framework defined events for Agent Loop. Room events are registered via `room.on()`.
 
 ## Tools
 A tool expand Agent's capability and keep it under control. A Tool can have 5 different exposure settings.
@@ -103,21 +103,3 @@ export interface AgentToolConfig {
 A tool can be registered (discovered) by extensions or via `additionalTools` (inline tools). Additional definitions that collide with Pi or framework built-ins are logged and ignored so the built-in wins; duplicate additional names are logged and preserve Pi's later-definition-wins behavior.
 Built-in tools can be overridden via `baseToolOverrides`. 
 `initialAdditionalActiveToolNames` activates registered `defaultActive: false` tools on creation.
-
-## Source entry points
-
-- Harness ownership and reload: `src/multi-agent-pi-harness.ts`
-- Public callback and extension exports: `src/multi-agent-pi/api.ts`
-- Callback context declarations and constructors: `src/multi-agent-pi/context.ts`
-- Room lifecycle and forwarding: `src/room/room.ts`
-- Registration and teardown ownership: `src/room/loop-manager.ts`
-- Detached operation ownership: `src/room/background-task-manager.ts`
-- Agent lifecycle: `src/agent/agent-loop.ts`
-- Native AgentSession assembly: `src/agent/agent-session-factory.ts`
-- Agent tool assembly and overrides: `src/agent/agent-session-factory-helper/agent-tools.ts`
-- Agent extension loading and runtime bindings: `src/agent/agent-session-factory-helper/agent-extensions.ts`
-- Built-in code-review tool orchestration: `src/tools/code-review.ts`
-- Standalone screenshot tool and capture helpers: `src/tools/screenshot.ts`, `src/tools/screenshot/`
-- Computer actions: `src/tools/computer-use.ts`, `src/tools/computer-use/`
-- Code-review AgentLoop construction and prompt: `src/agent-loop-imp/code-review.ts`, `src/agent-loop-imp/code-review-prompt.ts`
-- Room archival: `src/room/session-archive.ts`

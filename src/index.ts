@@ -161,6 +161,8 @@ export {
 export {
   Room,
   createRoomId,
+  type BeforeRoomResetEvent,
+  type BeforeRoomResetHandler,
   type CreateRoomOptions,
   type CreateRoomResult,
   type PrimaryAgentLoopOptions,
@@ -171,6 +173,10 @@ export {
   type RoomEnqueuePromptOptions,
   type RoomId,
   type RoomPromptOptions,
+  type RoomResetEndEvent,
+  type RoomResetEndHandler,
   type RoomSessionArchive,
   type RoomState,
+  type SessionRestoreEndEvent,
+  type SessionRestoreEndHandler,
 } from "./room/room.js";

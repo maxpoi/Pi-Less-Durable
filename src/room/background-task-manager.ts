@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
-import {
-  createBackgroundTaskRunContext,
-  type BackgroundTaskRunContext,
-} from "../multi-agent-pi/context.js";
+import { createBackgroundTaskRunContext } from "../multi-agent-pi/context-factory.js";
+import type { BackgroundTaskRunContext } from "../multi-agent-pi/types.js";
 import type { AgentLogger } from "../logger/logger.js";
 import type { RoomId } from "./room-types.js";
 
-export type { BackgroundTaskRunContext } from "../multi-agent-pi/context.js";
+export type { BackgroundTaskRunContext } from "../multi-agent-pi/types.js";
 
 export interface BackgroundTaskAbortEvent {
   readonly reason: string;

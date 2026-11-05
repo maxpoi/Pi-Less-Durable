@@ -8,11 +8,11 @@ import type {
   CompactionResult,
   ToolInfo,
 } from "@earendil-works/pi-coding-agent";
+import { createAgentLoopContext } from "../multi-agent-pi/context-factory.js";
 import type {
   AgentLoopContext,
   MultiAgentPiHandler,
-} from "../multi-agent-pi/context.js";
-import { issueMultiAgentPiEvent } from "../multi-agent-pi/api.js";
+} from "../multi-agent-pi/types.js";
 import type { MultiAgentPiSettingsManager } from "../config/multi-agent-pi-settings-manager.js";
 import { MultiAgentPiResourceLoader } from "../multi-agent-pi/extension-registry.js";
 import type { AgentLogger } from "../logger/logger.js";
@@ -698,28 +698,27 @@ export class AgentLoop {
       agentId: this.id,
       result,
     });
-    await issueMultiAgentPiEvent(
-      event,
-      this,
-      async context => {
-        for (const handler of [...this.#roundEndHandlers]) {
-          try {
-            await handler(event, context);
-          } catch (error) {
-            this.#logger.warning(
-              `[${this.#logTag}] agent_round_end handler failed`,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }
-      },
-      error => {
+    const context = createAgentLoopContext(this);
+    for (const handler of [...this.#roundEndHandlers]) {
+      try {
+        await handler(event, context);
+      } catch (error) {
         this.#logger.warning(
-          `[${this.#logTag}] public agent_round_end handler failed`,
+          `[${this.#logTag}] agent_round_end handler failed`,
           error instanceof Error ? error.message : String(error),
         );
-      },
-    );
+      }
+    }
+    for (const handler of this.#resourceLoader().getExtensionEventHandlers("agent_round_end")) {
+      try {
+        await handler(event, context);
+      } catch (error) {
+        this.#logger.warning(
+          `[${this.#logTag}] extension agent_round_end handler failed`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     return result;
   }
 
@@ -763,7 +762,10 @@ export class AgentLoop {
   /** Reload lifecycle */
 
   #reloadSession(): Promise<void> {
-    return this.#runLifecycle("reload", () => this.session.reload());
+    return this.#runLifecycle("reload", () => {
+      this.#resourceLoader().clearExtensionEventHandlers();
+      return this.session.reload();
+    });
   }
 
   #assertSessionReloadAvailable(operation: string): void {
@@ -817,6 +819,7 @@ export class AgentLoop {
     await settle(() => {
       clearAgentWaitingHeartbeat(this.#eventHandlerState);
       this.#roundEndHandlers.clear();
+      this.#resourceLoader().clearExtensionEventHandlers();
       this.#unsubscribe?.();
       this.#unsubscribe = undefined;
     });
