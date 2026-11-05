@@ -254,8 +254,13 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
       `AgentLoop "${options.agent.id}" persistence must be "durable" or "memory"`,
     );
   }
-  if (hasDir && hasRoom) {
-    throw new Error("AgentLoop.create() accepts only one of dir or room");
+  if (hasDir && room?.persistence === "durable") {
+    throw new Error(`Durable Room "${room.id}" owns its AgentLoop directories`);
+  }
+  if (room?.persistence === "memory" && persistence === "durable" && !hasDir) {
+    throw new Error(
+      `Durable AgentLoop "${options.agent.id}" in memory Room "${room.id}" requires an explicit directory`,
+    );
   }
   if (!hasDir && !hasRoom && persistence !== "memory") {
     throw new Error(
@@ -288,10 +293,15 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   let loopDir: string | undefined;
   if (typeof explicitDir === "string") {
     loopDir = resolveExplicitPersistenceDirectory(explicitDir, "AgentLoop data directory");
-  } else if (room !== undefined) {
+    room?.assertAgentLoopDirectoryAvailable(loopDir);
+  } else if (room?.persistence === "durable") {
+    const currentDir = room.currentDir;
+    if (currentDir === undefined) {
+      throw new Error(`Durable Room "${room.id}" requires a current directory`);
+    }
     const roomLoopDir = agent.tag === PRIMARY_AGENT_TAG
-      ? room.currentDir
-      : resolve(room.currentDir, "loops", agent.id);
+      ? currentDir
+      : resolve(currentDir, "loops", agent.id);
     loopDir = resolvePersistenceDirectory(roomLoopDir);
     room.assertAgentLoopDirectoryAvailable(loopDir);
   }
@@ -413,6 +423,7 @@ export async function createAgentLoop(options: CreateAgentLoopOptions): Promise<
   }
   const loop = await AgentLoop.bindSession({
     dir: loopDir,
+    persistence,
     identity: agent,
     session: result.session,
     backgroundTasks,

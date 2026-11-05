@@ -243,13 +243,18 @@ export class MultiAgentPiHarness {
     if (idOwner !== undefined && idOwner !== room) {
       throw new Error(`Room "${room.id}" is already registered`);
     }
-    const directoryOwner = [...this.#rooms.values()].find(registeredRoom =>
-      registeredRoom !== room
-      && persistenceDirectoryTreesOverlap(registeredRoom.roomDir, room.roomDir)
-    );
+    const roomDir = room.roomDir;
+    const directoryOwner = roomDir === undefined
+      ? undefined
+      : [...this.#rooms.values()].find(registeredRoom => {
+          const registeredRoomDir = registeredRoom.roomDir;
+          return registeredRoom !== room
+            && registeredRoomDir !== undefined
+            && persistenceDirectoryTreesOverlap(registeredRoomDir, roomDir);
+        });
     if (directoryOwner !== undefined) {
       throw new Error(
-        `Room directory "${room.roomDir}" overlaps Room "${directoryOwner.id}" at "${directoryOwner.roomDir}"`,
+        `Room directory "${roomDir}" overlaps Room "${directoryOwner.id}" at "${directoryOwner.roomDir}"`,
       );
     }
   }
