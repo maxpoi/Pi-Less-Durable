@@ -43,6 +43,7 @@ import type {
   RestoreRoomSessionResult,
   RoomEnqueuePromptOptions,
   RoomId,
+  RoomPersistence,
   RoomPromptOptions,
   RoomResetEndEvent,
   RoomResetEndHandler,
@@ -56,6 +57,8 @@ export type {
   BeforeRoomResetHandler,
   CreateRoomOptions,
   CreateRoomResult,
+  DurableRoomPrimaryAgentLoopOptions,
+  MemoryRoomPrimaryAgentLoopOptions,
   PrimaryAgentLoopOptions,
   ResetRoomOptions,
   ResetRoomResult,
@@ -63,6 +66,7 @@ export type {
   RestoreRoomSessionResult,
   RoomEnqueuePromptOptions,
   RoomId,
+  RoomPersistence,
   RoomPromptOptions,
   RoomResetEndEvent,
   RoomResetEndHandler,
@@ -81,9 +85,10 @@ interface RoomArchiveResult {
 /** One logical Room owning AgentLoops and detached background operations. */
 export class Room {
   readonly id: RoomId;
+  readonly persistence: RoomPersistence;
   readonly #loopManager = new LoopManager();
   readonly #backgroundTasks: BackgroundTaskManager;
-  readonly #resolvedRoomDir: string;
+  readonly #resolvedRoomDir: string | undefined;
   readonly #beforeResetHandlers = new Set<BeforeRoomResetHandler>();
   readonly #resetEndHandlers = new Set<RoomResetEndHandler>();
   readonly #restoreEndHandlers = new Set<SessionRestoreEndHandler>();
@@ -93,11 +98,13 @@ export class Room {
 
   private constructor(
     id: RoomId,
-    roomDir: string,
+    persistence: RoomPersistence,
+    roomDir: string | undefined,
   ) {
     this.id = id;
+    this.persistence = persistence;
     this.#resolvedRoomDir = roomDir;
-    ensureCurrentRoomSessionDirectory(roomDir);
+    if (roomDir !== undefined) ensureCurrentRoomSessionDirectory(roomDir);
     this.#backgroundTasks = new BackgroundTaskManager({
       roomId: id,
       logger: MultiAgentPiHarness.instance.logger,
@@ -107,12 +114,21 @@ export class Room {
   /** Create one standalone Room, optionally with an automatically registered primary. */
   static async create(options: CreateRoomOptions = {}): Promise<CreateRoomResult> {
     const id = createRoomId(options.id);
-    const roomDir = options.roomDir === undefined
-      ? resolvePersistenceDirectory(
-          join(MultiAgentPiHarness.instance.workingDir, "rooms", randomUUID()),
-        )
-      : resolveExplicitPersistenceDirectory(options.roomDir, "Room directory");
-    const room = new Room(id, roomDir);
+    const persistence: RoomPersistence = options.persistence ?? "durable";
+    if (persistence !== "durable" && persistence !== "memory") {
+      throw new Error(`Room "${id}" persistence must be "durable" or "memory"`);
+    }
+    if (persistence === "memory" && options.roomDir !== undefined) {
+      throw new Error(`Memory Room "${id}" must not define a Room directory`);
+    }
+    const roomDir = persistence === "memory"
+      ? undefined
+      : options.roomDir === undefined
+        ? resolvePersistenceDirectory(
+            join(MultiAgentPiHarness.instance.workingDir, "rooms", randomUUID()),
+          )
+        : resolveExplicitPersistenceDirectory(options.roomDir, "Room directory");
+    const room = new Room(id, persistence, roomDir);
 
     try {
       if (options.primaryLoop === undefined) return { room };
@@ -139,13 +155,15 @@ export class Room {
     }
   }
 
-  get roomDir(): string {
+  get roomDir(): string | undefined {
     return this.#resolvedRoomDir;
   }
 
-  /** Filesystem-canonical location of this Room's active conversation. */
-  get currentDir(): string {
-    return currentRoomSessionDirectory(this.#resolvedRoomDir);
+  /** Filesystem-canonical location of this durable Room's active conversation. */
+  get currentDir(): string | undefined {
+    return this.#resolvedRoomDir === undefined
+      ? undefined
+      : currentRoomSessionDirectory(this.#resolvedRoomDir);
   }
 
   get state(): RoomState {
@@ -179,7 +197,9 @@ export class Room {
   /** Return archived conversation directories by exact name, newest first. */
   listSessionArchives(): readonly RoomSessionArchive[] {
     this.#assertOpen("list session archives");
-    return listRoomSessionArchives(this.roomDir);
+    return this.#resolvedRoomDir === undefined
+      ? Object.freeze([])
+      : listRoomSessionArchives(this.#resolvedRoomDir);
   }
 
   get primaryId(): string | undefined {
@@ -211,7 +231,7 @@ export class Room {
     return this.#loopManager.has(agentId);
   }
 
-  /** @internal Preflight Room-owned persistence before AgentLoop opens its native session. */
+  /** @internal Preflight Room-owned AgentLoop directory identity before registration. */
   assertAgentLoopDirectoryAvailable(dir: string): void {
     this.#assertOpen("create an agent");
     this.#loopManager.assertDirectoryAvailable(dir);
@@ -386,13 +406,17 @@ export class Room {
     };
   }
 
-  /** Rename the complete active conversation to an archive, then open an empty current directory. */
+  /** Archive and reopen one durable Room session. Memory Rooms cannot reset. */
   async reset(options: ResetRoomOptions = {}): Promise<ResetRoomResult> {
+    this.#assertOpen("reset");
+    if (this.persistence === "memory") {
+      throw new Error(`Cannot reset memory Room "${this.id}"`);
+    }
     this.#beginSessionReset("reset");
     let archive: RoomArchiveResult;
     try {
       archive = await this.#archiveActiveSession("Room reset");
-      ensureCurrentRoomSessionDirectory(this.roomDir);
+      ensureCurrentRoomSessionDirectory(this.#requireRoomDir("reset"));
       await this.#emitResetEnd(archive.archiveName);
     } finally {
       this.#endSessionReset();
@@ -401,7 +425,8 @@ export class Room {
     const primaryLoop = await this.#createPrimary(options.primaryLoop);
     return {
       room: this,
-      ...archive,
+      persistence: "durable",
+      archiveName: archive.archiveName,
       ...(primaryLoop === undefined ? {} : { primaryLoop }),
     };
   }
@@ -412,13 +437,17 @@ export class Room {
     options: RestoreRoomSessionOptions = {},
   ): Promise<RestoreRoomSessionResult> {
     this.#assertOpen("restore a session");
-    assertRoomSessionArchiveRestorable(this.roomDir, archiveName);
+    if (this.persistence === "memory") {
+      throw new Error(`Cannot restore a session in memory Room "${this.id}"`);
+    }
+    const roomDir = this.#requireRoomDir("restore a session");
+    assertRoomSessionArchiveRestorable(roomDir, archiveName);
     this.#beginSessionReset("restore a session");
 
     let previous: RoomArchiveResult;
     try {
       previous = await this.#archiveActiveSession("Room session restore");
-      restoreRoomSessionArchive(this.roomDir, archiveName);
+      restoreRoomSessionArchive(roomDir, archiveName);
       await this.#emitResetEnd(previous.archiveName);
       await this.#emitRestoreEnd(archiveName);
     } finally {
@@ -469,24 +498,32 @@ export class Room {
 
   #endSessionReset(): void {
     if (this.#state !== "resetting") return;
-    ensureCurrentRoomSessionDirectory(this.roomDir);
+    if (this.#resolvedRoomDir !== undefined) {
+      ensureCurrentRoomSessionDirectory(this.#resolvedRoomDir);
+    }
     this.#backgroundTasks.reopen();
     this.#state = "open";
   }
 
-  async #archiveActiveSession(abortReason: string): Promise<RoomArchiveResult> {
+  async #destroyActiveSession(abortReason: string): Promise<void> {
     await this.#emitBeforeReset();
     try {
       await this.#backgroundTasks.abortAllAndWait(abortReason);
       await this.#loopManager.destroyAll();
     } catch (error) {
       throw new Error(
-        `Room "${this.id}" failed to destroy all agents before session archival`,
+        `Room "${this.id}" failed to destroy all agents during reset`,
         { cause: error },
       );
     }
+  }
 
-    const archiveName = archiveRoomSession(this.roomDir, this.id);
+  async #archiveActiveSession(abortReason: string): Promise<RoomArchiveResult> {
+    await this.#destroyActiveSession(abortReason);
+    const archiveName = archiveRoomSession(
+      this.#requireRoomDir("archive the active session"),
+      this.id,
+    );
     return { archiveName };
   }
 
@@ -507,8 +544,9 @@ export class Room {
     const event: BeforeRoomResetEvent = {
       type: "before_room_reset",
       roomId: this.id,
-      roomDir: this.roomDir,
-      currentDir: this.currentDir,
+      persistence: "durable",
+      roomDir: this.#requireRoomDir("emit before_room_reset"),
+      currentDir: this.#requireCurrentDir("emit before_room_reset"),
     };
     const context = createRoomContext(this);
     for (const handler of [...this.#beforeResetHandlers]) {
@@ -527,8 +565,9 @@ export class Room {
     const event: RoomResetEndEvent = {
       type: "room_reset_end",
       roomId: this.id,
-      roomDir: this.roomDir,
-      currentDir: this.currentDir,
+      persistence: "durable",
+      roomDir: this.#requireRoomDir("emit room_reset_end"),
+      currentDir: this.#requireCurrentDir("emit room_reset_end"),
       archiveName,
     };
     const context = createRoomContext(this);
@@ -548,8 +587,9 @@ export class Room {
     const event: SessionRestoreEndEvent = {
       type: "session_restore_end",
       roomId: this.id,
-      roomDir: this.roomDir,
-      currentDir: this.currentDir,
+      persistence: "durable",
+      roomDir: this.#requireRoomDir("emit session_restore_end"),
+      currentDir: this.#requireCurrentDir("emit session_restore_end"),
       archiveName,
     };
     const context = createRoomContext(this);
@@ -638,13 +678,16 @@ export class Room {
       );
     }
     const isPrimary = loop.tag === PRIMARY_AGENT_TAG;
-    const expectedDir = isPrimary
-      ? this.currentDir
-      : join(this.currentDir, "loops", loop.id);
-    if (loop.dir !== expectedDir) {
-      throw new Error(
-        `Room "${this.id}" agent "${loop.id}" directory must be "${expectedDir}"`,
-      );
+    if (this.persistence === "durable") {
+      const currentDir = this.#requireCurrentDir("register an agent");
+      const expectedDir = isPrimary
+        ? currentDir
+        : join(currentDir, "loops", loop.id);
+      if (loop.dir !== expectedDir) {
+        throw new Error(
+          `Room "${this.id}" agent "${loop.id}" directory must be "${expectedDir}"`,
+        );
+      }
     }
     if (isPrimary && this.#loopManager.primaryId !== undefined) {
       throw new Error(`Room "${this.id}" already has a primary agent`);
@@ -656,6 +699,17 @@ export class Room {
 
   #requireRegistration(agentId: string): AgentRegistration {
     return this.#loopManager.requireRegistration(agentId);
+  }
+
+  #requireRoomDir(action: string): string {
+    if (this.#resolvedRoomDir === undefined) {
+      throw new Error(`Cannot ${action} without a durable Room directory`);
+    }
+    return this.#resolvedRoomDir;
+  }
+
+  #requireCurrentDir(action: string): string {
+    return currentRoomSessionDirectory(this.#requireRoomDir(action));
   }
 
   #assertOpen(action: string): void {

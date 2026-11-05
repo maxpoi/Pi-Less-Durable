@@ -96,9 +96,9 @@ export type CreateAgentLoopOptions = {
       readonly room?: never;
     }
   | {
-      /** Room whose canonical root/child directory should contain this AgentLoop. */
+      /** Owning Room. Durable Rooms provide the loop directory; memory Rooms accept an optional loop-owned directory. */
       readonly room: Room;
-      readonly dir?: never;
+      readonly dir?: string;
     }
   | {
       /** In-memory standalone loops receive a unique OS temporary data directory. */
@@ -110,6 +110,7 @@ export type CreateAgentLoopOptions = {
 
 interface AgentLoopOptions {
   readonly dir: string;
+  readonly persistence: AgentLoopPersistence;
   readonly identity: AgentIdentity;
   readonly session: AgentSession;
   readonly backgroundTasks: BackgroundTaskManager;
@@ -138,6 +139,7 @@ export class AgentLoop {
   readonly id: string;
   readonly name: string;
   readonly tag: string;
+  readonly persistence: AgentLoopPersistence;
   readonly session: AgentSession;
   readonly backgroundTasks: BackgroundTaskManager;
   readonly systemPrompt: AgentSystemPrompt;
@@ -386,6 +388,7 @@ export class AgentLoop {
 
   private constructor(options: AgentLoopOptions) {
     this.#dir = options.dir;
+    this.persistence = options.persistence;
     this.id = options.identity.id;
     this.name = options.identity.name;
     this.tag = options.identity.tag;

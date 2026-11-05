@@ -19,21 +19,38 @@ MultiAgentPiHarness
 
 ## Room
 
-A `Room` is a virtual concept of a manager, which manage and act as a boundary of a bunch of `Agent Loop` via `BackgroundTaskManager` and `LoopManager`. It is represented physically on device by having a `dir`, which turns it to an actual folder on device. The active conversation and all its artifacts go under the Room's `sessions/current` dir, while every sibling folder under `sessions` appears in the session archive listing.
+A `Room` is a logical manager and ownership boundary for a group of AgentLoops through `BackgroundTaskManager` and `LoopManager`. It is not mandatory to have a Room in order to have an AgentLoop. Registering a loop transfers its lifecycle to the Room, so Room reload, reset, close, and destroy operations can act on it.
 
-It is not mandatory to have a `Room` in order to have an `Agent Loop`. But register a loop to a `Room` means its lifecycle is bounded by the `Room` internally so `Room` may call destroy / reload when needed.
+Room persistence has two modes:
 
-`Room` can be reset. It means the `Room` archives all its internal runtime and refresh to a empty state.
-Roughly:
+```text
+durable (default)
+→ owns a filesystem-canonical roomDir
+→ active conversation is under sessions/current
+→ sibling session directories are archives
+→ supports reset, archive listing, and restore
+
+memory
+→ owns no roomDir or currentDir
+→ creates no Room filesystem entries
+→ does not change AgentLoop persistence defaults
+→ accepts durable AgentLoops with explicit loop-owned directories
+→ supports reload and close, but not reset, archive, or restore
+```
+
+Durable Room reset preserves the Room object and its direct lifecycle handlers:
+
 ```text
 → before_room_reset
-→ abort and settle every background task
+→ abort and settle Room background tasks
 → destroy every registered AgentLoop
-→ rename the complete `sessions/current` conversation directory to a sibling archive
-→ create an empty `sessions/current` conversation directory
+→ archive sessions/current and create an empty current directory
 → room_reset_end
 → reopen the empty Room
+→ optionally create a replacement primary
 ```
+
+Memory Rooms reject reset without changing their state or loops. Reset events are therefore durable-only and contain `roomDir`, `currentDir`, and an archive name where applicable.
 
 ### LoopManager
 
@@ -49,9 +66,7 @@ A manager for owner-scoped detached work. A Room manager owns Room-wide operatio
 
 It has an id, name (for display purpose) and a tag (for grouping purpose). For example, you can register an extension target specific id or specific tag so all loops belong to the same tag will be registered.
 
-Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical data `dir`. Durable persistence stores the native transcript in `<dir>/context.jsonl` after conversation begins. Memory persistence keeps the transcript entirely in Pi's in-memory SessionManager; its data directory remains available for non-transcript artifacts and does not contain a framework-created `context.jsonl`. Active loop-owned background tasks make the AgentLoop busy, block reload, and are aborted and awaited by `destroy()`.
-
-If you want to register a loop as primary loop into a room, it needs to have a PRIMARY_AGENT_TAG and same `dir` as the Room's `sessions/current` dir.
+Every AgentLoop has an explicit execution `cwd` and an immutable, filesystem-canonical data `dir`. Durable persistence stores the native transcript in `<dir>/context.jsonl` after conversation begins. Memory persistence keeps the transcript entirely in Pi's in-memory SessionManager and does not create `context.jsonl`. 
 
 ### Round
 A `Round` is a complete lifecycle from begin to end started by a prompt (direct prompt, resume prompt or enqueued prompt).
