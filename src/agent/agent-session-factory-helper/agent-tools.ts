@@ -33,6 +33,12 @@ import {
   isComputerActionSupported,
 } from "../../tools/computer-use.js";
 import {
+  detachAgentTool,
+  detachToolDefinition,
+  type DetachedBuiltInToolOptions,
+} from "../../tools/detached-built-in-tool.js";
+import { withProgressLabel } from "../../tools/progress-label.js";
+import {
   createScreenshotTool,
   isScreenshotSupported,
 } from "../../tools/screenshot.js";
@@ -53,6 +59,8 @@ const PI_BASE_TOOL_NAME_SET = new Set<string>(PI_BASE_TOOL_NAMES);
 
 export const PI_DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
 
+export type BuiltInToolExecutionMode = "foreground" | "detached";
+
 export interface AgentToolConfig {
   /** Inline definitions added to the native AgentSession registry after extension tools. */
   readonly additionalTools?: readonly ToolDefinition[];
@@ -64,6 +72,8 @@ export interface AgentToolConfig {
   readonly excludedToolNames?: readonly string[];
   /** Execution overrides partitioned between Pi base tools and framework-owned tools. */
   readonly baseToolOverrides?: Readonly<Record<string, AgentTool>>;
+  /** Run Pi base and framework-owned tools inline or detached. */
+  readonly builtInToolExecutionMode?: BuiltInToolExecutionMode;
 }
 
 export interface CreateAgentToolsOptions {
@@ -143,11 +153,12 @@ function createDefaultPiBaseToolDefinitions(
   ];
 }
 
-function partitionToolOverrides(
+function assembleTools(
   config: AgentToolConfig,
   frameworkTools: readonly ToolDefinition[],
   defaultPiBaseTools: Readonly<Record<PiBaseToolName, AgentTool>>,
   logger: AgentLogger,
+  detachedOptions: DetachedBuiltInToolOptions,
 ): Pick<AgentToolsAssembly, "customTools" | "piBaseToolOverrides"> {
   const frameworkToolsByName = new Map(frameworkTools.map(tool => [tool.name, tool]));
   const frameworkOverrides: Record<string, AgentTool> = {};
@@ -167,12 +178,20 @@ function partitionToolOverrides(
     }
   }
 
+  const detached = config.builtInToolExecutionMode === "detached";
   const customTools = frameworkTools.map(definition => {
     const override = frameworkOverrides[definition.name];
-    return override === undefined
-      ? definition
-      : applyFrameworkToolOverride(definition, override);
+    const labeled = withProgressLabel(
+      override === undefined
+        ? definition
+        : applyFrameworkToolOverride(definition, override),
+    );
+    if (!detached || (definition.name === "code_review" && override === undefined)) {
+      return labeled;
+    }
+    return detachToolDefinition(labeled, detachedOptions);
   });
+
   const additionalToolsByName = new Map<string, ToolDefinition>();
   for (const definition of config.additionalTools ?? []) {
     if (
@@ -193,11 +212,19 @@ function partitionToolOverrides(
     additionalToolsByName.set(definition.name, definition);
   }
   customTools.push(...additionalToolsByName.values());
+
+  const needsPiBaseOverrides = detached || Object.keys(piBaseToolOverrides).length > 0;
+  if (!needsPiBaseOverrides) return { customTools };
+
+  const effectivePiBaseTools = { ...defaultPiBaseTools, ...piBaseToolOverrides };
   return {
     customTools,
-    ...(Object.keys(piBaseToolOverrides).length === 0
-      ? {}
-      : { piBaseToolOverrides: { ...defaultPiBaseTools, ...piBaseToolOverrides } }),
+    piBaseToolOverrides: Object.fromEntries(
+      Object.entries(effectivePiBaseTools).map(([name, tool]) => {
+        const labeled = withProgressLabel(tool);
+        return [name, detached ? detachAgentTool(labeled, detachedOptions) : labeled];
+      }),
+    ),
   };
 }
 
@@ -215,7 +242,7 @@ export function createAgentTools(options: CreateAgentToolsOptions): AgentToolsAs
     settingsManager: options.settingsManager,
     logger: options.logger,
   };
-  const tools = partitionToolOverrides(
+  const tools = assembleTools(
     options.config,
     [
       ...(isScreenshotSupported() ? [createScreenshotTool()] : []),
@@ -225,6 +252,10 @@ export function createAgentTools(options: CreateAgentToolsOptions): AgentToolsAs
     ],
     defaultPiBaseTools,
     options.logger,
+    {
+      backgroundTasks: options.backgroundTasks,
+      getInitiatingLoop: options.getInitiatingLoop,
+    },
   );
   return {
     ...tools,

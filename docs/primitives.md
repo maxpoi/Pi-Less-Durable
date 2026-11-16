@@ -58,7 +58,7 @@ A simple map to hold all loops registered with associated `Room`.
 
 ### BackgroundTaskManager
 
-A manager for owner-scoped detached work. A Room manager owns Room-wide operations. Every AgentLoop has a separate manager for work initiated by that exact loop. Room close/reset destroys its loops, and each loop aborts and settles its own tasks before disposing its AgentSession.
+A manager for owner-scoped detached work. A Room manager owns Room-wide operations. Every AgentLoop has a separate manager for work initiated by that exact loop. Tasks default to parallel execution. A sequential task waits for all previously admitted tasks and blocks later tasks until its complete task lifecycle settles. Room close/reset destroys its loops, and each loop aborts and settles its own tasks before disposing its AgentSession.
 
 ## AgentLoop
 
@@ -113,8 +113,16 @@ export interface AgentToolConfig {
   readonly excludedToolNames?: readonly string[];
   /** Execution overrides partitioned between Pi base tools and framework-owned tools. */
   readonly baseToolOverrides?: Readonly<Record<string, AgentTool>>;
+  /** Run Pi base and framework-owned tools inline or detached. */
+  readonly builtInToolExecutionMode?: "foreground" | "detached";
 }
 ```
 A tool can be registered (discovered) by extensions or via `additionalTools` (inline tools). Additional definitions that collide with Pi or framework built-ins are logged and ignored so the built-in wins; duplicate additional names are logged and preserve Pi's later-definition-wins behavior.
 Built-in tools can be overridden via `baseToolOverrides`. 
 `initialAdditionalActiveToolNames` activates registered `defaultActive: false` tools on creation.
+
+Framework-owned tools and Pi base-tool overrides receive a required string `label` parameter. Its schema describes a human-friendly progress label of at most eight words that omits detailed arguments, but deliberately does not reject empty, long, or otherwise poorly formatted strings. Existing argument normalizers retain a caller-supplied label when preparing the remaining fields. Event consumers can use `isToolProgressLabel()` or `TOOL_PROGRESS_LABEL_PATTERN` before displaying a label; the built-in logger falls back to the tool name when a label does not match. Consumer-provided tools, untouched native Pi base definitions, and the raw-grammar `codemode` tool itself remain unchanged.
+
+Built-in execution remains `foreground` when `builtInToolExecutionMode` is omitted. Without a Pi base-tool override, foreground mode leaves Pi's complete native definitions and metadata intact. Explicit foreground overrides and detached Pi base tools use Pi's `baseToolsOverride`; the framework's system-prompt builder continues to source their prompt snippets and guidelines from the complete default definitions. These plain `AgentTool` overrides intentionally use the base-tool execution contract rather than session-only `ExtensionToolContext` details. Framework-owned tools retain their complete definitions and context. Every generic detached invocation—including nested `ctx.executeTool()` and codemode calls—schedules its operation through the AgentLoop's background-task manager and immediately returns a terminating “running in the background” result. Pi then processes that acknowledgement through its normal `tool_result` hooks and `tool_execution_end` event; neither event is delayed until the operation finishes. Background tasks default to parallel execution; a sequential task waits for prior tasks and blocks later tasks in the same manager.
+
+The background operation executes directly rather than as a nested Pi tool call. Its eventual text and images are delivered separately through the next `wait-idle-then-prompt` Round, where they enter the input pipeline and ReAct transcript as a new prompt rather than replacing the completed acknowledgement. Consequently, completion content does not become a second `tool_result` for the completed call; result hooks apply to the acknowledgement, while ordinary input hooks apply to the completion prompt. Stock `code_review` already manages its own background task, so it retains its existing acknowledgement and completion behavior rather than being wrapped again; an explicit consumer replacement uses generic detachment. Consumer-provided additional and extension tools remain responsible for their own execution policy. `stop()` and `abort()` stop the model Round rather than detached work; AgentLoop destruction aborts and settles owned background tasks. The bundled bot opts into detached built-ins by default.

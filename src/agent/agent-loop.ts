@@ -129,6 +129,7 @@ interface QueuedAgentLoopPrompt {
   readonly id: string;
   readonly type: AgentLoopQueuedPromptType;
   readonly content: string;
+  readonly images: readonly ImageContent[];
 }
 
 const AGENT_LOOP_QUEUE_LOG_FILE = "log.jsonl";
@@ -174,13 +175,18 @@ export class AgentLoop {
     return this.#prompt(message, images);
   }
 
-  /** Enqueue text for automatic fire-and-forget FIFO submission. */
-  enqueuePrompt(type: AgentLoopQueuedPromptType, content: string): void {
+  /** Enqueue content for automatic fire-and-forget FIFO submission. */
+  enqueuePrompt(
+    type: AgentLoopQueuedPromptType,
+    content: string,
+    images: readonly ImageContent[] = [],
+  ): void {
     this.#assertUsable("enqueue a prompt on");
     const queued: QueuedAgentLoopPrompt = {
       id: randomUUID(),
       type,
       content,
+      images: images.map(image => ({ ...image })),
     };
     this.#appendPromptQueueLog([queued], "queued");
     this.#promptQueue.push(queued);
@@ -471,8 +477,9 @@ export class AgentLoop {
 
     const queued = this.#takeNextQueuedPromptGroup();
     const content = queued.map(item => item.content).join(GROUPED_PROMPT_SEPARATOR);
+    const images = queued.flatMap(item => item.images);
     try {
-      const operation = this.#prompt(content, [], () => {
+      const operation = this.#prompt(content, images, () => {
         try {
           this.#appendPromptQueueLog(queued, "un-queued");
         } catch (error) {
@@ -547,6 +554,7 @@ export class AgentLoop {
         timestamp,
         id: item.id,
         content: item.content,
+        imageCount: item.images.length,
         type: item.type,
         status,
       })).join("\n") + "\n",

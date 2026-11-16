@@ -44,6 +44,7 @@ export type {
   AgentConfig,
   AgentLoopExtensionSources,
   AgentToolConfig,
+  BuiltInToolExecutionMode,
 } from "./agent/agent-session-factory.js";
 export {
   DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -106,6 +107,7 @@ export {
 } from "./output/message-post-queue.js";
 export {
   BackgroundTaskManager,
+  type BackgroundTaskExecutionMode,
   type BackgroundTaskHandle,
   type BackgroundTaskManagerOptions,
 } from "./room/background-task-manager.js";
@@ -124,6 +126,10 @@ export {
   type ComputerActionToolDependencies,
   type InterestedAreaAfterAction,
 } from "./tools/computer-use.js";
+export {
+  TOOL_PROGRESS_LABEL_PATTERN,
+  isToolProgressLabel,
+} from "./tools/progress-label.js";
 export {
   SCREENSHOT_DIRECTORY,
   buildScreenshotResult,

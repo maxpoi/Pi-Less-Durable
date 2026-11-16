@@ -10,9 +10,13 @@ export interface BackgroundTaskAbortEvent {
   readonly reason: string;
 }
 
+export type BackgroundTaskExecutionMode = "parallel" | "sequential";
+
 export interface BackgroundTaskOptions<TResult = unknown> {
   readonly id?: string;
   readonly label: string;
+  /** Parallel tasks may overlap; sequential tasks wait for prior work and block later work. */
+  readonly executionMode?: BackgroundTaskExecutionMode;
   /** Optional task-specific cancellation side effect, fired once on task abort. */
   readonly onAbort?: (
     event: BackgroundTaskAbortEvent,
@@ -50,7 +54,9 @@ export type BackgroundTaskManagerOptions = {
 /** Owner-scoped manager for detached operation admission, cancellation, and settlement. */
 export class BackgroundTaskManager {
   readonly #tasks = new Map<string, BackgroundTaskHandle<unknown>>();
+  readonly #pendingExecutions = new Set<Promise<void>>();
   readonly #options: BackgroundTaskManagerOptions;
+  #lastSequentialExecution: Promise<void> = Promise.resolve();
   #roomId: RoomId | undefined;
   #acceptingTasks = true;
 
@@ -112,35 +118,38 @@ export class BackgroundTaskManager {
       return abortNotification;
     };
     let handle: BackgroundTaskHandle<TResult>;
-    const done = Promise.resolve().then(async (): Promise<TResult | undefined> => {
-      try {
-        if (controller.signal.aborted) return undefined;
-        const result = await options.run(context);
-        if (result === undefined || controller.signal.aborted) return undefined;
-        await options.onResult?.(result, context);
-        return result;
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          this.#options.logger.warning(
-            `[background:${label}] Failed`,
-            error instanceof Error ? error.message : String(error),
-          );
-          try {
-            await options.onError?.(error, context);
-          } catch (deliveryError) {
+    const done = this.#schedule(
+      options.executionMode ?? "parallel",
+      async (): Promise<TResult | undefined> => {
+        try {
+          if (controller.signal.aborted) return undefined;
+          const result = await options.run(context);
+          if (result === undefined || controller.signal.aborted) return undefined;
+          await options.onResult?.(result, context);
+          return result;
+        } catch (error) {
+          if (!controller.signal.aborted) {
             this.#options.logger.warning(
-              `[background:${label}] Failure delivery failed`,
-              deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+              `[background:${label}] Failed`,
+              error instanceof Error ? error.message : String(error),
             );
+            try {
+              await options.onError?.(error, context);
+            } catch (deliveryError) {
+              this.#options.logger.warning(
+                `[background:${label}] Failure delivery failed`,
+                deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
+              );
+            }
           }
+          return undefined;
+        } finally {
+          if (abortNotification !== undefined) await abortNotification;
+          this.#tasks.delete(id);
+          this.#options.logger.info(`[background:${label}] Finished (${id})`);
         }
-        return undefined;
-      } finally {
-        if (abortNotification !== undefined) await abortNotification;
-        this.#tasks.delete(id);
-        this.#options.logger.info(`[background:${label}] Finished (${id})`);
-      }
-    });
+      },
+    );
 
     handle = {
       id,
@@ -190,6 +199,26 @@ export class BackgroundTaskManager {
       );
     }
     this.#acceptingTasks = true;
+  }
+
+  #schedule<TResult>(
+    executionMode: BackgroundTaskExecutionMode,
+    operation: () => Promise<TResult>,
+  ): Promise<TResult> {
+    const blockers = executionMode === "sequential"
+      ? [...this.#pendingExecutions]
+      : [this.#lastSequentialExecution];
+    const result = Promise.allSettled(blockers).then(operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#pendingExecutions.add(settled);
+    if (executionMode === "sequential") this.#lastSequentialExecution = settled;
+    void settled.then(() => {
+      this.#pendingExecutions.delete(settled);
+    });
+    return result;
   }
 
   get #ownerLabel(): string {

@@ -57,7 +57,10 @@ async function runBot(): Promise<void> {
     const { room } = await Room.create({
       primaryLoop: {
         agent: mainIdentity,
-        config: { cwd: process.cwd() },
+        config: {
+          cwd: process.cwd(),
+          toolConfig: { builtInToolExecutionMode: "detached" },
+        },
       },
     });
     try {
