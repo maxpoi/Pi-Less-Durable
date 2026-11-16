@@ -6,6 +6,7 @@ import type {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentLogger } from "../../logger/logger.js";
+import { isToolProgressLabel } from "../../tools/progress-label.js";
 import { evictStaleSessionImages } from "./context-maintenance.js";
 import {
   clearAgentWaitingHeartbeat,
@@ -152,7 +153,9 @@ export function logAgentEventDiagnostics(
   } else if (event.type === "message_start" && event.message?.role === "assistant") {
     logger.info(`[${logTag}] ⏳ Waiting for LLM response...`);
   } else if (event.type === "tool_execution_start") {
-    const label = event.args?.label || event.toolName;
+    const label = isToolProgressLabel(event.args?.label)
+      ? event.args.label
+      : event.toolName;
     const labelSuffix = label === event.toolName ? "" : `: ${label}`;
     logger.info(
       `[${logTag}] Tool started: ${event.toolName}${labelSuffix}`,

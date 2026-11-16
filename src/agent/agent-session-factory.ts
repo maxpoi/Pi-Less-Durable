@@ -66,6 +66,7 @@ export type {
 } from "./agent-session-factory-helper/agent-extensions.js";
 export type {
   AgentToolConfig,
+  BuiltInToolExecutionMode,
 } from "./agent-session-factory-helper/agent-tools.js";
 
 /** Consumer-applied configuration for constructing one agent runtime. */
